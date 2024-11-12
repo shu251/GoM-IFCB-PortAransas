@@ -1,0 +1,684 @@
+---
+title: "ifcb-port aransas"
+format:
+  html:
+    code-fold: show
+    code-tools: true
+    code-copy: true
+    toc: true
+    toc-location: left
+    number-sections: true
+    number-depth: 2
+editor: visual
+---
+
+# Set-up
+
+```{r, warning=FALSE}
+# | warning: false
+# | message: false
+library(tidyverse)
+library(patchwork)
+library(svglite)
+library(scales)
+```
+
+# Preliminary input data
+
+All data from Port Aransas. Counts by hour. Remove data before January 1 2008, as it was newly deployed and has some inconsistencies. Also using lubridate to convert to R-friendly date/time formats.
+
+```{r}
+counts <- read.csv("input-data/counts_hourly_Hu.csv") |> 
+  # Use lubridate package to assign "date" format.
+  mutate(DAY = ymd_hms(X)) %>% 
+  mutate(DATE = date(DAY),
+         MONTH = month(DAY),
+         HOUR = hour(DAY)) %>% 
+  select(DAY, DATE, MONTH, HOUR, everything(), -X) %>% 
+  filter(as_date(DAY) >= as_date("2008-01-01"))
+
+range(counts$DAY)
+# head(counts)
+```
+
+Counts by day.
+
+```{r}
+# counts <- read.csv("input-data/carbon_data/counts_daily.csv") %>%
+#   # Use lubridate package to assign "date" format.
+#   mutate(DAY = ymd(X)) %>% select(DAY, everything(), -X) %>% 
+#   filter(as_date(DAY) >= as_date("2008-01-01"))
+# glimpse(counts)
+# range(counts$DAY)
+```
+
+Carbon biomass by day.
+
+```{r}
+# carbon <- read.csv("input-data/carbon_data/carbon_daily.csv") %>%
+  # mutate(DAY = ymd(X)) %>% select(DAY, everything(), -X) %>%
+  # filter(as_date(DAY) >= as_date("2008-01-01"))
+
+# glimpse(carbon)
+# range(carbon$DAY)
+```
+
+Data set ranges from "2008-01-01" to "2017-08-24".
+
+### Export taxa names for manual curation
+
+Export for manual curation
+
+```{r}
+# tax_export <- counts %>% 
+#     pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "COUNT") %>% #Add in time here when we have it.
+#     select(CELL_ID) %>% distinct()
+```
+
+## Refine input data
+
+## Add taxa
+
+```{r}
+tax_curated <- read.csv("input-data/tax-list.csv") |>
+  select(CELL_ID:Species) 
+  
+
+head(tax_curated)
+```
+
+```{r}
+counts_long_wtax <- counts %>% 
+  pivot_longer(cols = -c(DAY, DATE, MONTH, HOUR), names_to = "CELL_ID", values_to = "COUNT", values_drop_na = TRUE) %>% 
+  filter(COUNT > 0) %>% 
+  left_join(tax_curated)
+
+# head(counts_long_wtax)
+# range(counts_long_wtax$COUNT)
+```
+
+Types of classifications in dataset.
+
+```{r}
+table(counts_long_wtax$COURSE_CLASSIFICATION)
+
+table(counts_long_wtax$TYPE)
+# View(counts_long_wtax %>% filter(TYPE == ""))
+```
+
+## Add seasons
+
+# Make data frames to assign season
+
+Spring = March 1 - May 31 Summer = June 1 - Aug 31 Fall = Sept 1 - Nov 30 Winter = Dec 1 - Feb (March 1 (-1))
+
+```{r}
+head(counts)
+```
+
+```{r}
+df_season <- counts %>% 
+  pivot_longer(cols = -c(DAY, DATE, MONTH, HOUR), names_to = "CELL_ID", values_to = "COUNT") %>%
+  mutate(DATA_GAP = case_when(
+    is.na(COUNT) ~ "Missing",
+    TRUE ~ "Not missing"
+  )) |> 
+  mutate(date_tmp =  as.Date(format(DAY, '2024-%m-%d')), 
+        SEASON = case_when(between(date_tmp, ymd('2024-03-01'), ymd('2024-05-31')) ~ "Spring",
+                           between(date_tmp, ymd('2024-06-01'), ymd('2024-08-31')) ~ "Summer", 
+                           between(date_tmp, ymd('2024-09-01'), ymd('2024-11-30')) ~ "Fall", 
+                           TRUE ~ "Winter")) %>% # Winter needs to be "else" because you can't select between.
+  select(DAY, date_tmp, SEASON, DATA_GAP) |> distinct() |> 
+  mutate(YEAR = year(DAY),
+         MONTH = month(DAY),
+         DATE = day(DAY),
+         HOUR = hour(DAY)) |> 
+  group_by(SEASON) |> 
+  mutate(month_start_tmp = case_when(
+    SEASON == "Winter" ~ max(MONTH),
+    TRUE ~ min(MONTH)),
+    year_start_tmp = case_when(SEASON == "Winter" ~ YEAR - 1,
+                               TRUE ~ YEAR),
+    ) |> 
+  mutate(month_end_tmp = case_when(
+    SEASON == "Winter" ~ 2,
+    TRUE ~ max(MONTH))) |> 
+  group_by(SEASON, MONTH) |> 
+  mutate(day_start_tmp = min(day(DAY)),
+         day_end_tmp = case_when(
+           (SEASON == "Winter" & leap_year(YEAR) == TRUE) ~ 29,
+           (SEASON == "Winter" & leap_year(YEAR) == FALSE) ~ 28,
+           (SEASON == "Summer" | SEASON == "Spring") ~ 31,
+           SEASON == "Fall" ~ 30
+         )) |> 
+  ungroup() |> 
+  unite("start", year_start_tmp, month_start_tmp, day_start_tmp, sep = "-", remove = FALSE) |> 
+  unite("end", YEAR, month_end_tmp, day_end_tmp, sep = "-", remove = FALSE) |> 
+  mutate(START = ymd(start),
+         END = ymd(end)) |> 
+  select(DAY, DATE, MONTH, YEAR, HOUR, SEASON, START, END) |> distinct()
+
+# View(df_season |> select(SEASON, START, END) |> distinct())
+```
+
+Test seasonal plot
+
+```{r}
+# head(df_season)
+ggplot(df_season, aes(x = as_date(DAY))) +
+  geom_rect(data = (filter(df_season, SEASON == "Fall")), alpha = 0.2, fill = "#cc5500",
+            aes(xmin = START, xmax = END, ymin = 0, ymax = 10000)) +
+  geom_rect(data = (filter(df_season, SEASON == "Spring")), alpha = 0.2, fill = "#bccbae",
+            aes(xmin = START, xmax = END, ymin = 0, ymax = 10000)) +
+  geom_rect(data = (filter(df_season, SEASON == "Summer")), alpha = 0.2, fill = "#ffbf00",
+            aes(xmin = START, xmax = END, ymin = 0, ymax = 10000)) +
+  geom_rect(data = (filter(df_season, SEASON == "Winter")), alpha = 0.2, fill = "#5d4e62",
+            aes(xmin = START, xmax = END, ymin = 0, ymax = 10000))
+```
+
+Combine with exisiting data frame.
+
+```{r}
+# str(counts_long_wtax)
+# str(df_season)
+counts_long_wtax_wseason <- counts_long_wtax %>% 
+  left_join(df_season %>% select(DAY, SEASON, START, END))
+
+```
+
+```{r}
+save(counts_long_wtax_wseason, file = "output-data/count_data_annotated.RData")
+```
+
+### Plot counts for all data
+
+```{r}
+# save(counts, file = "../test-dashboard/input-data/prelim_pa_counts.RData")
+```
+
+```{r}
+head(counts)
+```
+
+```{r}
+count_seg <- counts %>%
+  pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "COUNT") %>%
+  group_by(DAY) %>% 
+    summarise(COUNT_TOTAL = sum(COUNT)) %>% 
+  mutate(DATA_GAP = case_when(
+    is.na(COUNT_TOTAL) ~ "Missing",
+    TRUE ~ "Not missing"
+  ),
+  COUNT_ACTUAL = case_when(
+    is.na(COUNT_TOTAL) ~ max(COUNT_TOTAL),
+    TRUE ~ COUNT_TOTAL
+  )) |> 
+  ggplot(aes(x = DAY)) +
+      geom_rect(data = (filter(df_season, SEASON == "Fall")), alpha = 0.2, fill = "#cc5500",
+                aes(xmin = START, xmax = END, ymin = 9000, ymax = 15000)) +
+      geom_rect(data = (filter(df_season, SEASON == "Spring")), alpha = 0.2, fill = "#bccbae",
+                aes(xmin = START, xmax = END, ymin = 9000, ymax = 15000)) +
+      geom_rect(data = (filter(df_season, SEASON == "Summer")), alpha = 0.2, fill = "#ffbf00",
+                aes(xmin = START, xmax = END, ymin = 9000, ymax = 15000)) +
+      geom_rect(data = (filter(df_season, SEASON == "Winter")), alpha = 0.2, fill = "#5d4e62",
+                aes(xmin = START, xmax = END, ymin = 9000, ymax = 15000)) +
+    geom_segment(data = karenia, aes(x = DAY, xend = DAY, y = 0, yend = 7999), lwd = 0.1, color = "red", alpha = 0.6) +
+    # geom_segment(aes(x = DAY, xend = DAY, y = 0, yend = COUNT_ACTUAL, color = DATA_GAP), lwd = 0.1, color = "#252525") +
+    geom_point(aes(x = DAY, y = COUNT_ACTUAL, color = DATA_GAP), shape = 20, color = "#252525", size = 0.8) +
+  scale_y_log10(position = "left") +
+  scale_x_date(expand = c(0,0)) +
+  theme_classic() +
+  labs(x = "", y = bquote("Cells"~ml^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"))
+count_seg
+```
+
+### Plot carbon value for all data
+
+```{r}
+carbon_seg <- carbon %>%
+  pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "C") %>%
+  group_by(DAY) %>% 
+    summarise(C_TOTAL = sum(C)) %>% 
+  mutate(DATA_GAP = case_when(
+    is.na(C_TOTAL) ~ "Missing",
+    TRUE ~ "Not missing"
+  ),
+  C_ACTUAL = case_when(
+    is.na(C_TOTAL) ~ max(C_TOTAL),
+    TRUE ~ C_TOTAL
+  )) %>%
+  ggplot(aes(x = DAY, y = C_ACTUAL)) +
+    # geom_segment(aes(x = DAY, xend = DAY, y = 0, yend = C_ACTUAL),lwd = 0.1, color = "#bdbdbd") +
+  geom_point(shape = 4, size = 0.7, color = "black") + 
+  # scale_y_log10(limits = c(1E+01,1E+10)) +
+  scale_y_log10(position = "right", limits = c(1E+02, 1E+10)) +
+  scale_x_date(expand = c(0,0)) +
+  theme_classic() +
+  labs(x = "", y = bquote("Carbon"~ml^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"))
+carbon_seg  
+```
+
+Combine plots for dual axis
+
+```{r, fig.height=9, fig.width=10}
+count_seg + carbon_seg + patchwork::plot_layout(nrow = 2)
+ggsave("figures/cell_carbon_2panel_points.svg", width = 10, height = 9, units = "in")
+```
+
+## Pull metadata for Gulf of Mexico
+
+```{r}
+# install.packages("rnoaa", force = TRUE)
+```
+
+```{r}
+```
+
+## *Karena* example
+
+Making a new dataframe with only seasons, data gaps, and Karenia notifications
+
+```{r}
+karenia <- counts |> 
+  pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "COUNT") %>%
+  mutate(KARENIA = case_when(
+    (grepl("Karenia", CELL_ID) & COUNT > 2) ~ "Notification",
+    TRUE ~ "No alert"
+  )) |> 
+  filter(KARENIA == "Notification") |> 
+  # arrange(desc(KARENIA)) |> 
+  select(DAY, KARENIA) |> distinct()
+# 366 total notifications sent out.
+# length(karenia$DAY)
+# length(unique(karenia$DAY))
+
+# Make character list
+karenia_note <- as.character(as.Date(karenia$DAY))
+```
+
+# Periodicity
+
+*Lomb-Scargle Periodogram*
+
+## Seasonality
+
+*NEXT* \* filter by cell types \* remove IFCB excess stuff \* Look at annual trends overall
+
+Look at overall seasonal trends by critical taxa
+
+```{r}
+compiled_df <- counts %>% 
+  pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "COUNT") %>% 
+    left_join(carbon %>% 
+      pivot_longer(cols = -c(DAY), names_to = "CELL_ID", values_to = "CARBON")) |> 
+  left_join(df_season) |> select(-START, -END)
+```
+
+### Plot what a single day looks like IN each month
+
+```{r}
+# unique(compiled_df$CELL_ID)
+rm <- c("blurry", "bubble", "detritus", "Beads", "unclassified")
+```
+
+With daily counts only.
+
+```{r, fig.height=4, fig.width=14}
+# Factor months
+season_order <- c("Winter", "Spring", "Summer", "Fall")
+season_color <- c("#5d4e62", "#bccbae", "#ffbf00", "#cc5500")
+
+compiled_df %>% 
+  filter(grepl("Prorocentrum", CELL_ID) | grepl("Chaetoceros", CELL_ID)) %>% 
+  drop_na() |> 
+  group_by(SEASON, DAY, CELL_ID) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  ggplot(aes(x = SEASON_ORDER, y = COUNT_SUM, group = SEASON_ORDER)) +
+    geom_jitter(width = 0.1, size = 0.4, shape = 20, aes(color = SEASON_ORDER)) +
+    geom_boxplot(width = 0.5, alpha = 0.6, aes(fill = SEASON_ORDER)) + 
+    scale_color_manual(values = season_color) +
+    scale_fill_manual(values = season_color) +
+    scale_y_log10() +
+    facet_grid(cols = vars(CELL_ID), scales = "free", space = "free") +
+  theme_classic() +
+  labs(x = "", y = bquote("Cell"~ml^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"))
+```
+
+Carbon per day
+
+```{r, fig.height=4, fig.width=14}
+# Factor months
+season_order <- c("Winter", "Spring", "Summer", "Fall")
+season_color <- c("#5d4e62", "#bccbae", "#ffbf00", "#cc5500")
+
+compiled_df %>% 
+  filter(grepl("Prorocentrum", CELL_ID) | grepl("Chaetoceros", CELL_ID)) %>% 
+  drop_na() |> 
+  group_by(SEASON, DAY, CELL_ID) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  ggplot(aes(x = SEASON_ORDER, y = CARBON_SUM, group = SEASON_ORDER)) +
+    geom_jitter(width = 0.1, size = 0.4, shape = 20, aes(color = SEASON_ORDER)) +
+    geom_boxplot(width = 0.5, alpha = 0.6, aes(fill = SEASON_ORDER)) + 
+    scale_color_manual(values = season_color) +
+    scale_fill_manual(values = season_color) +
+    scale_y_log10() +
+    facet_grid(cols = vars(CELL_ID), scales = "free", space = "free") +
+  theme_classic() +
+  labs(x = "", y = bquote("Carbon"~ml^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"))
+```
+
+```{r, fig.height=4, fig.width=14}
+# Factor months
+season_order <- c("Winter", "Spring", "Summer", "Fall")
+season_color <- c("#5d4e62", "#bccbae", "#ffbf00", "#cc5500")
+
+compiled_df %>% 
+  filter(grepl("Prorocentrum", CELL_ID) | grepl("Chaetoceros", CELL_ID)) %>% 
+  drop_na() |> 
+  group_by(SEASON, DAY, CELL_ID) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  ggplot(aes(x = SEASON_ORDER, y = CARBON_per_CELL, group = SEASON_ORDER)) +
+    geom_jitter(width = 0.1, size = 0.4, shape = 20, aes(color = SEASON_ORDER)) +
+    geom_boxplot(width = 0.5, alpha = 0.6, aes(fill = SEASON_ORDER)) + 
+    scale_color_manual(values = season_color) +
+    scale_fill_manual(values = season_color) +
+    scale_y_log10() +
+    facet_grid(cols = vars(CELL_ID), scales = "free", space = "free") +
+  theme_classic() +
+  labs(x = "", y = bquote("Carbon"~cell^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"))
+```
+
+## Plot carbon per cell overall
+
+```{r}
+season_order <- c("Winter", "Spring", "Summer", "Fall")
+season_color <- c("#5d4e62", "#bccbae", "#ffbf00", "#cc5500")
+
+compiled_df %>% 
+  drop_na() |> 
+  filter(!(CELL_ID %in% rm)) |> 
+  group_by(SEASON, DAY) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  mutate(date_tmp =  as.Date(format(DAY, '2024-%m-%d'))) |> 
+  ggplot(aes(x = date_tmp, y = CARBON_per_CELL, color = SEASON_ORDER)) +
+    geom_line() +
+  scale_color_manual(values = season_color) +
+  scale_y_log10() + 
+  coord_polar() +
+  theme_void() +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        legend.position = "none",
+        panel.grid.major =  element_line(color = "grey")) +
+    labs(x = "", title = bquote("Carbon"~cell^-1))
+```
+
+*Repeat this plot for cells overall* *Individual taxa too*
+
+```{r}
+season_order <- c("Winter", "Spring", "Summer", "Fall")
+season_color <- c("#5d4e62", "#bccbae", "#ffbf00", "#cc5500")
+
+compiled_df %>% 
+  drop_na() |> 
+  filter(!(CELL_ID %in% rm)) |> 
+  group_by(SEASON, DAY) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  mutate(date_tmp =  as.Date(format(DAY, '2024-%m-%d'))) |> 
+  mutate(MONTH = month(date_tmp)) |> 
+  ggplot(aes(x = date_tmp, y = CARBON_per_CELL, color = SEASON_ORDER)) +
+    geom_point() +
+  scale_color_manual(values = season_color) +
+  scale_y_log10() + 
+  scale_x_date(expand = c(0,0)) +
+  theme_classic() +
+  labs(x = "", y = bquote("Cells"~ml^-1)) +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        axis.title = element_text(size = 13, color = "black", face = "bold"),
+        legend.position = "bottom", legend.title = element_blank())
+```
+
+### Diatoms
+
+```{r}
+unique(compiled_df$CELL_ID)
+diatom <- c("Pseudonitzschia", "pennate_rod", "Centric", "Cylindrotheca", "Thalassiosira", "Chaetoceros")
+```
+
+```{r}
+compiled_df %>% 
+  drop_na() |> 
+  filter(!(CELL_ID %in% rm)) |> 
+  filter(CELL_ID == "Pseudonitzschia") |> 
+  group_by(SEASON, DAY) %>% 
+  summarise(COUNT_SUM = sum(COUNT),
+            CARBON_SUM = sum(CARBON),
+            CARBON_per_CELL = CARBON_SUM/COUNT_SUM) %>%
+  mutate(SEASON_ORDER = factor(SEASON, levels = season_order)) |> 
+  mutate(date_tmp =  as.Date(format(DAY, '2024-%m-%d'))) |> 
+  ggplot(aes(x = date_tmp, y = CARBON_per_CELL, color = SEASON_ORDER)) +
+    geom_line() +
+  scale_color_manual(values = season_color) +
+  scale_y_log10() + 
+  coord_polar() +
+  theme_void() +
+  theme(axis.text = element_text(size = 12, color = "black", face = "bold"),
+        legend.position = "none",
+        panel.grid.major =  element_line(color = "grey")) +
+    labs(x = "", title = bquote("Carbon"~cell^-1))
+```
+
+# Import Gulf metadata
+
+Metadata information compiled by Siddarth Seshampally.
+
+## TABS Buoy D
+
+Import and compile data for TABS Buoy D from "Ocean Data". Downloaded as individual years.
+
+First isolate downloaded files.
+
+```{r}
+ocean_data_files <- list.files(path = "input-data/TABS_D/", pattern = "Ocean Data ", full.names = TRUE)
+
+# Make sure it works
+ocean_data_files
+# The full.names = TRUE means that it will output the whole path. This is what we want!
+```
+
+Let's test out how to import one of these files so we can write an effective function below.
+
+```{r}
+test <- read.table(
+  "input-data/TABS_D/Ocean Data 2010.txt", #Use read.table, because columns were separated by either 1 or more spaces. 
+  comment.char = "", # Tell R that the "#" in line 1 and 2 needs to be read, instead of ignored.
+  skip = 1, #Skip the first line, because there are 2 "headers"
+  header = TRUE # make sure the first column is read in as a column header.
+  )
+head(test)
+# ?read.table
+
+# We will want to fix the column headers below, so let's try it. 
+# YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+
+test_headers <- test |> 
+  select(YEAR = X.yr,
+         MONTH = mo,
+         DAY = dy,
+         HOUR = hr,
+         MINUTE = mn,
+         DEPTH_m = m,
+         TEMP_degC = degC,
+         COND_mS_cm = mS.cm,
+         SAL_psu = psu,
+         O2_perc = X.,
+         O2_PPM = ppm,
+         Cl_ug_l = ug.l,
+         TURB_FTU = FTU,
+         pH = X..1,
+         EH = mv)
+## This is where you will want to review the data you collected. And remember R is really basic when it comes to reading in spaces and special characters. So we should make more meaningful column headers.
+head(test_headers)
+```
+
+```         
+#YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+#yr  mo dy hr mn       m  degC  mS/cm   psu     %   ppm   ug/l   FTU     -    mv
+2010 01 01 00 00     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+2010 01 01 00 30     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+```
+
+*Columns should be:* YY MM DD hh mm DEPTH OTMP COND SAL O2% O2PPM CLCON TURB PH EH
+
+We can test out and build each line of the function using more examples with `ocean_data_files[1]`
+
+```{r}
+i <- ocean_data_files[1]
+# i
+# Isolate each file name, so we can get the year information.
+strip_name <- unlist(strsplit(i, " "))
+year <- str_remove(strip_name[3], ".txt")
+year
+```
+
+Write a function to import each file, modify it, and anneal it to itself.
+
+```{r}
+rm(in_data); rm(new_table)
+# The i will be our variable in the function. This "for" statement will reach each item in the "ocean_data_files" file list.
+for (i in ocean_data_files){
+  in_data <- read.table(i, 
+  comment.char = "", skip = 1, header = TRUE)
+  # Get year information.
+  strip_name <- unlist(strsplit(i, " "))
+  year <- str_remove(strip_name[3], ".txt")
+  # Add as a column
+  in_data$YEAR <- year
+  # Write an if else statement to combine all data.
+  if (!exists("new_table")){
+    new_table <- in_data
+  } else {
+    new_table <- rbind(new_table, in_data)
+  }
+  rm(in_data)
+}
+
+# Check out the new table
+head(new_table)
+
+# All years?
+unique(new_table$YEAR)
+```
+
+Fix column headers now. Note that for this data, YEAR was listed twice. We can clean it up now. But it is an example of how to parse file names for dataframe information.
+
+```{r}
+ocean_data_dfs <- new_table |> 
+  select(YEAR = `X.yr`,
+       MONTH = mo,
+       DAY = dy,
+       HOUR = hr,
+       MINUTE = mn,
+       DEPTH_m = m,
+       TEMP_degC = degC,
+       COND_mS_cm = `mS.cm`,
+       SAL_psu = psu,
+       O2_perc = `X.`,
+       O2_PPM = ppm,
+       Cl_ug_l = `ug.l`,
+       TURB_FTU = FTU,
+       pH = `X..1`,
+       EH = mv)
+colnames(ocean_data_dfs)
+```
+
+## Make plots with ocean data
+
+```{r}
+ocean_data_dfs_long <- ocean_data_dfs |> 
+  pivot_longer(cols = -c(YEAR, MONTH, DAY, HOUR, MINUTE), names_to = "VARIABLE", values_to = "VALUE") |> 
+  unite(date, YEAR, MONTH, DAY, sep = "-", remove = FALSE) |>
+  unite(month_day, MONTH, DAY, sep = "-", remove = FALSE) |> 
+  unite(time, HOUR, MINUTE, sep = ":") |> 
+  # Artificially make a column of dates that have the same year (it needs to be a leap year).
+  mutate(GRAPH_DATE = as.Date(paste("2012", month(date),mday(date), sep = "-")))
+
+head(ocean_data_dfs_long)
+```
+
+When data are in long format it is easier to make lots of plots. Use the next two sets of commands to look at the data and variables.
+
+```{r}
+range(ocean_data_dfs$TEMP_degC)
+# hist(ocean_data_dfs$TURB_FTU)
+# range(ocean_data_dfs$TURB_FTU)
+```
+
+```{r}
+unique(ocean_data_dfs_long$VARIABLE)
+head(ocean_data_dfs_long)
+```
+
+### Temperature by year
+
+```{r, fig.height=8, fig.width=15}
+
+ocean_data_dfs_long |> 
+  filter(VARIABLE == "TEMP_degC") |> 
+  filter(VALUE < 99) |> 
+  mutate(YEAR = as.character(YEAR)) |> 
+  group_by(YEAR, date, GRAPH_DATE) |> 
+    summarise(TEMP_MEAN = mean(VALUE),
+              TEMP_MIN = min(VALUE),
+              TEMP_MAX = max(VALUE)) |> 
+  ggplot(aes(x = GRAPH_DATE, y = TEMP_MEAN, group = YEAR, color = YEAR)) +
+  scale_x_date(labels = scales::date_format("%m/%d")) +
+  geom_point(shape = 16, size = 2) +
+  geom_errorbar(aes(x = GRAPH_DATE, ymin = TEMP_MIN, ymax = TEMP_MAX)) +
+  scale_color_brewer(palette = "Set2") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 0, face = "bold", color = "black", hjust = 0.5, vjust = 1, size = 24),
+    axis.text.y = element_text(color = "black", face = "bold", size = 24),
+    axis.title = element_text(color = "black", face = "bold", size = 24)) +
+  labs(x = "Date", y = "Temperature °C")
+```
+
+# Diel
+
+What does diel cycle look for individual seasons? *Waiting for hourly values*
+
+# Time-series model
+
+```{r}
+# install.packages("modeltime")
+# install.packages("tidymodels")
+# install.packages("timetk")
+library(tidymodels)
+library(timetk)
+library(tidyverse)
+```

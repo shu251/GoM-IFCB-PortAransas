@@ -1,0 +1,178 @@
+---
+title: "Metadata-function"
+output: html_document
+date: "2024-11-11"
+---
+
+# Import Gulf metadata
+
+
+Metadata information compiled by Siddarth Seshampally.
+
+
+## TABS Buoy D
+
+Import and compile data for TABS Buoy D from "Ocean Data". Downloaded as individual years.
+
+
+First isolate downloaded files.
+```{r}
+ocean_data_files <- list.files(path = "input-data/TABS_D/", pattern = "Ocean Data ", full.names = TRUE)
+
+# Make sure it works
+ocean_data_files
+# The full.names = TRUE means that it will output the whole path. This is what we want!
+```
+Let's test out how to import one of these files so we can write an effective function below.
+```{r}
+test <- read.table(
+  "input-data/TABS_D/Ocean Data 2010.txt", #Use read.table, because columns were separated by either 1 or more spaces. 
+  comment.char = "", # Tell R that the "#" in line 1 and 2 needs to be read, instead of ignored.
+  skip = 1, #Skip the first line, because there are 2 "headers"
+  header = TRUE # make sure the first column is read in as a column header.
+  )
+head(test)
+# ?read.table
+
+# We will want to fix the column headers below, so let's try it. 
+# YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+
+test_headers <- test |> 
+  select(YEAR = X.yr,
+         MONTH = mo,
+         DAY = dy,
+         HOUR = hr,
+         MINUTE = mn,
+         DEPTH_m = m,
+         TEMP_degC = degC,
+         COND_mS_cm = mS.cm,
+         SAL_psu = psu,
+         O2_perc = X.,
+         O2_PPM = ppm,
+         Cl_ug_l = ug.l,
+         TURB_FTU = FTU,
+         pH = X..1,
+         EH = mv)
+## This is where you will want to review the data you collected. And remember R is really basic when it comes to reading in spaces and special characters. So we should make more meaningful column headers.
+head(test_headers)
+```
+
+```
+#YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+#yr  mo dy hr mn       m  degC  mS/cm   psu     %   ppm   ug/l   FTU     -    mv
+2010 01 01 00 00     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+2010 01 01 00 30     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+```
+_Columns should be:_ YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+
+We can test out and build each line of the function using more examples with `ocean_data_files[1]`
+
+```{r}
+i <- ocean_data_files[1]
+# i
+# Isolate each file name, so we can get the year information.
+strip_name <- unlist(strsplit(i, " "))
+year <- str_remove(strip_name[3], ".txt")
+year
+```
+
+
+Write a function to import each file, modify it, and anneal it to itself. 
+```{r}
+rm(in_data); rm(new_table)
+# The i will be our variable in the function. This "for" statement will reach each item in the "ocean_data_files" file list.
+for (i in ocean_data_files){
+  in_data <- read.table(i, 
+  comment.char = "", skip = 1, header = TRUE)
+  # Get year information.
+  strip_name <- unlist(strsplit(i, " "))
+  year <- str_remove(strip_name[3], ".txt")
+  # Add as a column
+  in_data$YEAR <- year
+  # Write an if else statement to combine all data.
+  if (!exists("new_table")){
+    new_table <- in_data
+  } else {
+    new_table <- rbind(new_table, in_data)
+  }
+  rm(in_data)
+}
+
+# Check out the new table
+head(new_table)
+
+# All years?
+unique(new_table$YEAR)
+```
+
+Fix column headers now. Note that for this data, YEAR was listed twice. We can clean it up now. But it is an example of how to parse file names for dataframe information. 
+```{r}
+ocean_data_dfs <- new_table |> 
+  select(YEAR = `X.yr`,
+       MONTH = mo,
+       DAY = dy,
+       HOUR = hr,
+       MINUTE = mn,
+       DEPTH_m = m,
+       TEMP_degC = degC,
+       COND_mS_cm = `mS.cm`,
+       SAL_psu = psu,
+       O2_perc = `X.`,
+       O2_PPM = ppm,
+       Cl_ug_l = `ug.l`,
+       TURB_FTU = FTU,
+       pH = `X..1`,
+       EH = mv)
+colnames(ocean_data_dfs)
+```
+
+## Make plots with ocean data
+```{r}
+ocean_data_dfs_long <- ocean_data_dfs |> 
+  pivot_longer(cols = -c(YEAR, MONTH, DAY, HOUR, MINUTE), names_to = "VARIABLE", values_to = "VALUE") |> 
+  unite(date, YEAR, MONTH, DAY, sep = "-", remove = FALSE) |>
+  unite(month_day, MONTH, DAY, sep = "-", remove = FALSE) |> 
+  unite(time, HOUR, MINUTE, sep = ":") |> 
+  # Artificially make a column of dates that have the same year (it needs to be a leap year).
+  mutate(GRAPH_DATE = as.Date(paste("2012", month(date),mday(date), sep = "-")))
+
+head(ocean_data_dfs_long)
+```
+
+When data are in long format it is easier to make lots of plots. Use the next two sets of commands to look at the data and variables. 
+```{r}
+range(ocean_data_dfs$TEMP_degC)
+# hist(ocean_data_dfs$TURB_FTU)
+# range(ocean_data_dfs$TURB_FTU)
+```
+
+
+```{r}
+unique(ocean_data_dfs_long$VARIABLE)
+head(ocean_data_dfs_long)
+```
+
+### Temperature by year
+```{r, fig.height=8, fig.width=15}
+
+ocean_data_dfs_long |> 
+  filter(VARIABLE == "TEMP_degC") |> 
+  filter(VALUE < 99) |> 
+  mutate(YEAR = as.character(YEAR)) |> 
+  group_by(YEAR, date, GRAPH_DATE) |> 
+    summarise(TEMP_MEAN = mean(VALUE),
+              TEMP_MIN = min(VALUE),
+              TEMP_MAX = max(VALUE)) |> 
+  ggplot(aes(x = GRAPH_DATE, y = TEMP_MEAN, group = YEAR, color = YEAR)) +
+  scale_x_date(labels = scales::date_format("%m/%d")) +
+  geom_point(shape = 16, size = 2) +
+  geom_errorbar(aes(x = GRAPH_DATE, ymin = TEMP_MIN, ymax = TEMP_MAX)) +
+  scale_color_brewer(palette = "Set2") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 0, face = "bold", color = "black", hjust = 0.5, vjust = 1, size = 24),
+    axis.text.y = element_text(color = "black", face = "bold", size = 24),
+    axis.title = element_text(color = "black", face = "bold", size = 24)) +
+  labs(x = "Date", y = "Temperature °C")
+```
+
