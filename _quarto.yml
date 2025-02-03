@@ -2,7 +2,6 @@ project:
   type: website
   output-dir: docs
   render:
-    - ifcb-timeseries-analysis.qmd
     - ifcb-data-wrangle.qmd
 
 
@@ -10,8 +9,6 @@ website:
   title: "IFCB analysis | Port Aransas"
   navbar:
     left:
-      - href: ifcb-timeseries-analysis.qmd
-        text: Home
       - href: ifcb-data-wrangle.qmd
         text: Analysis
 
