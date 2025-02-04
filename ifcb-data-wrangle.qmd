@@ -563,6 +563,136 @@ carbon_long_wtax_wseason <- carbon_long_wtax %>%
 # save(carbon_long_wtax_wseason, counts_long_wtax_wseason, df_oneyear, df_season, file = "input-data/data_annotated_wtax_wseason.RData")
 ```
 
+# Plot all years of data
+
+```{r}
+load(file = "input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
+```
+
+
+```{r}
+head(counts_long_wtax_wseason)
+```
+
+We want to add information to the dates for when there are Karenia notifications and a data gap. 
+```{r}
+kar_gap <- counts %>% 
+  select(-DAY, -MONTH, -HOUR) %>% 
+  pivot_longer(cols = -c(DATE), names_to = "CELL_ID", values_to = "COUNT") %>%
+  mutate(ADD = case_when(
+    (grepl("Karenia", CELL_ID) & COUNT > 2) ~ "Notification",
+    is.na(COUNT) ~ "Data gap"
+  )) %>% 
+  mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
+         YEAR = year(as_date(DATE))) %>% 
+  select(WEEK, YEAR, ADD) %>% 
+  distinct() %>% 
+  drop_na()
+```
+
+
+
+```{r}
+counts_byweek <- counts_long_wtax_wseason %>% 
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
+  filter(Phylum != "Cnidaria") %>% 
+  # Average the counts PER day for a single Cell ID type
+  group_by(DAY, DATE, CELL_ID, SEASON, START, END, DAY_NOYEAR) %>% 
+    summarise(COUNT_MEAN_PERDAY = mean(COUNT)) %>% 
+  ungroup() %>% 
+  # Sum total cells for a single day
+  group_by(DAY, DATE, SEASON) %>% 
+    summarise(SUM_COUNT_PERDAY = sum(COUNT_MEAN_PERDAY)) %>% 
+  ungroup() %>% 
+  # Add a column to specify the WEEK - have week start on Mondays
+  mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
+         MONTH = month(as_date(DATE)),
+         YEAR = year(as_date(DATE))) %>% 
+  # Get mean, min, and max for each week
+  group_by(WEEK, SEASON, YEAR) %>% 
+    summarise(MEAN_WEEK = mean(SUM_COUNT_PERDAY),
+              MAX_WEEK = max(SUM_COUNT_PERDAY),
+              MIN_WEEK = min(SUM_COUNT_PERDAY))
+
+head(counts_byweek)
+# range(counts_byday$SUM_COUNT_PERDAY)
+```
+
+```{r, fig.height=6, fig.width=30}
+oneyr_counts <- counts_byweek %>% 
+  ggplot(aes(x = as_date(WEEK), y = MEAN_WEEK)) + 
+    geom_line(color = "black", alpha = 0.4) +
+    geom_linerange(aes(ymin = MIN_WEEK, ymax = MAX_WEEK, color = SEASON, alpha = 0.5), linewidth = 0.5) +
+    geom_point(shape = 19, size = 2, aes(color = SEASON)) +
+  theme_classic() +
+  scale_x_date(date_labels = "%b %y", expand = c(0,0), date_breaks = "3 months", date_minor_breaks = "month") +
+  scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
+  scale_y_log10() +
+  labs(x = "", y = bquote("log cell"~ml^-1)) +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(color = "black", face = "bold", size = 14),
+        axis.title = element_text(color = "black", face = "bold", size = 14),
+        axis.text.y = element_text(color = "black", face = "bold", size = 14),
+        panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3)) +
+  geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 10000), shape = 19, color = "red", alpha = 0.6) +
+  geom_point(data = (kar_gap %>% filter(ADD != "Notification")), aes(x = as_date(WEEK), y = 0), size = 3, alpha = 0.6, shape = 17, color = "#bdbdbd")
+```
+Repeat with carbon data
+
+```{r}
+c_byweek <- carbon_long_wtax_wseason %>% 
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
+  filter(Phylum != "Cnidaria") %>% 
+  # Average the counts PER day for a single Cell ID type
+  group_by(DAY, DATE, CELL_ID, SEASON, START, END, DAY_NOYEAR) %>% 
+    summarise(C_MEAN_PERDAY = mean(CARBON)) %>% 
+  ungroup() %>% 
+  # Sum total cells for a single day
+  group_by(DAY, DATE, SEASON) %>% 
+    summarise(SUM_C_PERDAY = sum(C_MEAN_PERDAY)) %>% 
+  ungroup() %>% 
+  # Add a column to specify the WEEK - have week start on Mondays
+  mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
+         MONTH = month(as_date(DATE)),
+         YEAR = year(as_date(DATE))) %>% 
+  # Get mean, min, and max for each week
+  group_by(WEEK, SEASON, YEAR) %>% 
+    summarise(MEAN_WEEK = mean(SUM_C_PERDAY),
+              MAX_WEEK = max(SUM_C_PERDAY),
+              MIN_WEEK = min(SUM_C_PERDAY))
+
+head(c_byweek)
+```
+
+```{r, fig.height=6, fig.width=30}
+oneyr_c <- c_byweek %>% 
+  ggplot(aes(x = as_date(WEEK), y = MEAN_WEEK)) + 
+    geom_line(color = "black", alpha = 0.4) +
+    geom_linerange(aes(ymin = MIN_WEEK, ymax = MAX_WEEK, color = SEASON, alpha = 0.5), linewidth = 0.5) +
+    geom_point(shape = 19, size = 2, aes(color = SEASON)) +
+  theme_classic() +
+  scale_x_date(date_labels = "%b %y", expand = c(0,0), date_breaks = "3 months", date_minor_breaks = "month") +
+  scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
+  scale_y_log10() +
+  labs(x = "", y = bquote("Carbon cell"~ml^-1)) +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(color = "black", face = "bold", size = 14),
+        axis.title = element_text(color = "black", face = "bold", size = 14),
+        axis.text.y = element_text(color = "black", face = "bold", size = 14),
+        panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3)) +
+  geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 1E+7), shape = 19, color = "red", alpha = 0.6) +
+  geom_point(data = (kar_gap %>% filter(ADD != "Notification")), aes(x = as_date(WEEK), y = 0), size = 3, alpha = 0.6, shape = 17, color = "#bdbdbd")
+```
+
+
+```{r, fig.height=10, fig.width=32}
+(oneyr_counts + theme(legend.position = "none")) + 
+  oneyr_c + 
+  patchwork::plot_layout(nrow = 2)
+```
+
+
+
 
 
 # Plot a year of data
@@ -570,12 +700,6 @@ carbon_long_wtax_wseason <- carbon_long_wtax %>%
 ```{r}
 load(file = "input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
 ```
-
-```{r}
-# head(counts_long_wtax_wseason)
-# range(counts_long_wtax_wseason$DAY)
-```
-
 
 ### Plot 1 year of cell count data
 
@@ -654,47 +778,131 @@ carbon_1yr <- c_1yr %>%
 ```{r, fig.height=7, fig.width=7}
 (cell_counts_1yr + theme(legend.position = "none")) + carbon_1yr + patchwork::plot_layout(nrow = 2)
 ```
-## Plot Microeuks only
-```{r}
+# Subset only microeukaryotes
+
+
+## All daily
+
+
+Look at by hour and season for different supergroups. 
+```{r, fig.height=8, fig.width=10}
+# head(counts_long_wtax_wseason)
 # counts_long_wtax_wseason
-```
-
-
-```{r}
-
 counts_long_wtax_wseason |> 
   filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
   filter(Phylum != "Cnidaria") %>% 
-    # Remove any zeroes
-  filter(COUNT > 0) %>% 
-  # Group by Cell ID to get mean for cell ID for a single day.
-  group_by(DAY_NOYEAR, DATE, CELL_ID, SEASON, Domain, Supergroup, Phylum) %>% 
-    summarise(PER_DAY_CELL = mean(COUNT)) %>% 
-  ungroup() %>% 
-  # NOW sum up the different cell types that contribute to the course classification per day
-  group_by(DAY_NOYEAR, DATE, SEASON, Domain, Supergroup, Phylum) %>% 
-    summarise(PER_DAY_Phylum = sum(PER_DAY_CELL)) %>% 
-  ungroup() %>% 
-  # Now average by year
-  group_by(DAY_NOYEAR, Supergroup, Phylum, SEASON) %>%  
-    summarise(MEAN_COUNTS_1yr = mean(PER_DAY_Phylum)) %>% 
-  ggplot(aes(x = DAY_NOYEAR, y = MEAN_COUNTS_1yr, fill = Phylum)) + 
-  geom_area(position = "stack", color = "black") +
+  # Remove any zeroes
+  filter(COUNT > 0 | is.na(COUNT)) %>% 
+  # Get average for a given hour in the same month and season for an individual day.
+  group_by(HOUR, SEASON, Supergroup, Phylum) %>% 
+    summarise(MEAN_COUNT_DAILY = mean(COUNT),
+              MAX_COUNT_DAILY = max(COUNT),
+              MIN_COUNT_DAILY = min(COUNT)) %>% 
+  ggplot(aes(x = (HOUR), y = MEAN_COUNT_DAILY, color = SEASON)) +
+    geom_path(aes(group = Phylum)) +
+    geom_point(shape = 19) +
+    facet_grid(rows = vars(Supergroup), cols = vars(SEASON), scales = "free") +
   theme_classic() +
-  scale_x_date(date_labels = "%b", expand = c(0,0)) +
-  scale_y_continuous(expand = c(0,0)) +
-  labs(x = "", y = "Cell counts") +
+  scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
+  scale_y_log10() +
+  labs(x = "", y = bquote("log cell"~ml^-1)) +
   theme(legend.position = "bottom", legend.title = element_blank(),
-        axis.text.x = element_text(color = "black", face = "bold", size = 12),
-        axis.text.y = element_text(color = "black", face = "bold", size = 12)) +
-  geom_rect(xmin = as_date("2024-09-01"), xmax = as_date("2024-11-30"), ymin = (YMAX + 20), ymax = (YMAX + 40), alpha = 0.2, fill = "#cc5500") +
-  geom_rect(xmin = as_date("2024-03-01"), xmax = as_date("2024-5-31"), ymin = (YMAX + 20), ymax = (YMAX + 40), alpha = 0.2, fill = "#bccbae") +
-  geom_rect(xmin = as_date("2024-06-01"), xmax = as_date("2024-08-31"), ymin = (YMAX + 20), ymax = (YMAX + 40), alpha = 0.2, fill = "#ffbf00") +
-  geom_rect(xmin = as_date("2024-12-01"), xmax = as_date("2024-12-31"), ymin = (YMAX + 20), ymax = (YMAX + 40), alpha = 0.2, fill = "#5d4e62") +
-  geom_rect(xmin = as_date("2024-01-01"), xmax = as_date("2024-02-29"), ymin = (YMAX + 20), ymax = (YMAX + 40), alpha = 0.2, fill = "#5d4e62")
-#Spring = March 1 - May 31 
-#Summer = June 1 - Aug 31 
-#Fall = Sept 1 - Nov 30 
-#Winter = Dec 1 - Feb (March 1 (-1))
+        axis.text.x = element_text(color = "black", face = "bold", size = 10),
+        axis.title = element_text(color = "black", face = "bold", size = 11),
+        axis.text.y = element_text(color = "black", face = "bold", size = 10),
+        panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3))
+
 ```
 
+Each line represents a phylum, so there are some withe more variability than others. We also know that cell types are not equally represented across the supergroups in the IFCB data, therefore, we need to focus on the stramenopiles and alveolata vs. other supergroups. 
+
+```{r, fig.height=8, fig.width=10}
+alv_stram <- c("Stramenopiles", "Alveolata")
+# counts_long_wtax_wseason
+counts_long_wtax_wseason |> 
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
+  filter(Phylum != "Cnidaria") %>% 
+  filter(!(Supergroup %in% alv_stram)) %>% 
+  # Remove any zeroes
+  filter(COUNT > 0 | is.na(COUNT)) %>% 
+  # Get average for a given hour in the same month and season for an individual day.
+  group_by(HOUR, SEASON, Supergroup, Phylum, CELL_ID) %>% 
+    summarise(MEAN_COUNT_DAILY = mean(COUNT),
+              MAX_COUNT_DAILY = max(COUNT),
+              MIN_COUNT_DAILY = min(COUNT)) %>% 
+  ggplot(aes(x = (HOUR), y = MEAN_COUNT_DAILY, color = SEASON)) +
+    geom_path(aes(group = CELL_ID)) +
+    geom_point(shape = 19) +
+    facet_grid(rows = vars(Supergroup), cols = vars(SEASON), scales = "free") +
+  theme_classic() +
+  scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
+  scale_y_log10() +
+  labs(x = "", y = bquote("log cell"~ml^-1)) +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(color = "black", face = "bold", size = 10),
+        axis.title = element_text(color = "black", face = "bold", size = 11),
+        axis.text.y = element_text(color = "black", face = "bold", size = 10),
+        panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3))
+```
+
+# Focus on Alveolata, Stramenopiles, & Haptophytes
+```{r}
+head(counts_long_wtax_wseason)
+```
+
+```{r}
+alveolata_counts_1yr <- counts_long_wtax_wseason %>%  
+  filter(Supergroup == "Alveolata") %>% 
+  # Remove any zeroes
+  filter(COUNT > 0) %>% 
+  # Group by Cell ID to get mean for cell ID for a single day.
+  group_by(DAY_NOYEAR, DATE, CELL_ID, SEASON, Phylum, Class, Order, Family, Genus) %>% 
+    summarise(PER_DAY_CELL = mean(COUNT)) %>% 
+  ungroup() %>% 
+  # Use this if grouping across cell IDs
+  # group_by(DAY_NOYEAR, DATE, SEASON, Phylum, Class, Order, Family, Genus, CELL_ID) %>% 
+  #   summarise(PER_DAY_CELLID = sum(PER_DAY_CELL)) %>% 
+  # ungroup() %>% 
+  # Now average by year
+  group_by(DAY_NOYEAR, CELL_ID, SEASON, Phylum, Class, Order, Family, Genus) %>%  
+    summarise(MEAN_COUNTS_1yr = mean(PER_DAY_CELL)) 
+#
+head(alveolata_counts_1yr)
+unique(alveolata_counts_1yr$Phylum) # dinos and ciliates
+unique(alveolata_counts_1yr$Class) # colors?
+unique(alveolata_counts_1yr$Order) 
+max(alveolata_counts_1yr$DAY_NOYEAR)
+
+labels <- alveolata_counts_1yr %>%
+  filter(DAY_NOYEAR == "2024-12-31")
+# head(labels)
+```
+```{r, fig.height=30, fig.width=8}
+alveolata_counts_1yr %>% 
+  # filter(Phylum == "Ciliophora") %>%
+  ggplot(aes(x = DAY_NOYEAR, y = MEAN_COUNTS_1yr, fill = Order)) + 
+  geom_line(color = "black", alpha = 0.4) +
+    geom_point(shape = 21, size = 2, color = "black") +
+  theme_classic() +
+  scale_x_date(date_labels = "%b", expand = c(0,0)) +
+  # scale_y_continuous(expand = c(0,0)) +
+  scale_y_log10() +
+  facet_grid(rows = vars(Class), scales = "free") +
+  ggrepel::geom_label_repel(data = labels, aes(label = CELL_ID, x = DAY_NOYEAR, y = MEAN_COUNTS_1yr), nudge_x = 0.1, inherit.aes=F, na.rm = FALSE) +
+  labs(x = "", y = bquote("Cell"~ml^-1)) +
+  theme(legend.position = "bottom", legend.title = element_blank(),
+        axis.text.x = element_text(color = "black", face = "bold", size = 12),
+        axis.text.y = element_text(color = "black", face = "bold", size = 12))
+```
+
+
+## Ochrophyta
+Diatoms
+
+- Cell counts over the entire dataset.
+- Mean, min, max for each day / week / month?
+- carbon per cell
+- Diversity over time
+
+Analyses:
+PCA or CCA plot
