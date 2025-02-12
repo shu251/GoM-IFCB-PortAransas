@@ -283,12 +283,12 @@ all_data <- file_list %>%
   bind_rows()
 
 # Check the combined dataset
-print(dim(all_data))  # Print the dimensions of the data
-print(head(all_data))  # View the first few rows
+# print(dim(all_data))  # Print the dimensions of the data
+# print(head(all_data))  # View the first few rows
 
 # range(all_data$datetime)
 ```
-
+Below needs to modified. We cannot group by year - we need to look at a parameters over time. 
 ```{r}
 # Extract year for aggregation
 head(all_data)
@@ -341,7 +341,7 @@ ggplot(yearly_data, aes(x = year)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels if needed
 ```
 
-> Siddarth, add in temperature and tidal 
+> Siddarth, revise above to show (1) weekly averages over a year with min and max plotted
 
 
 ## Combine with IFCB data
@@ -364,6 +364,8 @@ combined_biol_metadata <- all_data %>%
 # unique(combined_biol_metadata$SEASON)
 head(combined_biol_metadata)
 ```
+
+> These parameters are our priority WDIR, WSPD, ATMP, WTMP(SST), TIDE
 
 **Standard Meteorological Data:** 
 
@@ -820,72 +822,99 @@ To perform the RDA analysis, we need to isolate biotic vs. abiotic parameters. N
 load("input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
 ```
 
-### As many parameters as possible
+### Subset and format data
+
+Goal is to keep as many parameters as possible, but also export the biological data as a matrix that has the same dimensions as the metadata. 
 
 Isolate the abiotic parameters.
 ```{r}
-head(combined_biol_metadata)
-colnames(combined_biol_metadata)
-range(combined_biol_metadata$DAY)
-
-
-
+# Get non-numeric data here.
 season_cat <- combined_biol_metadata %>% 
   select(DAY, SEASON) %>% 
   distinct()
 
+# Isolate numeric data
+#WDIR, WSPD, ATMP, WTMP(SST), TIDE
 abiotic_rda_input <- combined_biol_metadata %>% 
-  select(DAY, WDIR, WSPD, ATMP, WTMP, PRES) %>% 
-  distinct() %>% 
-  column_to_rownames(var = "DAY") %>% 
-  mutate_if(is.character, as.numeric) %>% 
-  as.matrix
-
-# Standardize
-standard_metadata <- vegan::decostand(abiotic_rda_input, MARGIN = 2, method = "standardize")
-# head(standard_metadata)
-
-metadata_normed_all <- data.frame(standard_metadata) %>% 
-  rownames_to_column(var = "DAY") %>% 
-  mutate(DAY = as_datetime(DAY)) %>% 
-  left_join(season_cat) %>% 
-  column_to_rownames(var = "DAY")
-
+  # select(DAY, WDIR, WSPD, ATMP, WTMP, TIDE) %>% 
+  select(DAY, ATMP, WTMP, TIDE) %>% 
+  filter(ATMP != 999.0 | WTMP != 999.0 | TIDE != 999.0) %>% 
+  distinct() 
 ```
 
-Repeat to prep biological data.
-```{r}
-head(combined_biol_metadata)
-day_rownames <- as.character(unique(rownames(metadata_normed_all)))
+Repeat for biotic data
 
-biotic_rda_input_count <- combined_biol_metadata %>% 
-  # Potential to filter by specific groups here. 
+```{r}
+unique(combined_biol_metadata$Phylum)
+```
+
+
+```{r}
+biotic_rda_input <- combined_biol_metadata %>% 
   filter(COURSE_CLASSIFICATION == "Microeukaryote" | COURSE_CLASSIFICATION == "Cyanobacteria") %>% 
-  ungroup() %>% 
-  # In a given hour for the DAY... sum up the counts. 
-  group_by(DAY, CELL_ID) %>% 
-    summarise(VALUE = sum(COUNT)) %>%
-  distinct() %>% 
-  pivot_wider(names_from = CELL_ID, values_from = VALUE, values_fn = mean, values_fill = 0) %>% 
+  # filter(Phylum == "Ochrophyta") %>% 
+  select(DAY, CELL_ID, COUNT) %>% distinct() %>% 
+  pivot_wider(names_from = CELL_ID, values_from = COUNT, values_fn = mean, values_fill = 0) %>% 
+  distinct() 
+```
+
+Compare dates. Create intersection of date time. 
+
+```{r}
+biotic_rows <- as.character((unique(biotic_rda_input$DAY)))
+abiotic_rows <- as.character((unique(abiotic_rda_input$DAY)))
+
+intersect_rows <- intersect(biotic_rows, abiotic_rows)
+```
+
+Compile matrices with date select as well. 
+```{r}
+biotic_rda_input_filtered <- biotic_rda_input %>% 
+  filter(as_datetime(DAY) %in% as_datetime(intersect_rows)) %>% 
   column_to_rownames(var = "DAY") %>% 
   mutate_if(is.character, as.numeric) %>%
   as.matrix
 
-biotic_rda_standard_count <- vegan::decostand(biotic_rda_input_count, MARGIN = 2, method = "standardize")
+abiotic_rda_input_filtered <- abiotic_rda_input %>% 
+  filter(as_datetime(DAY) %in% as_datetime(intersect_rows)) %>% 
+  column_to_rownames(var = "DAY") %>% 
+  mutate_if(is.character, as.numeric) %>%
+  as.matrix
 
+# dim(biotic_rda_input_filtered)
+# dim(abiotic_rda_input_filtered)
+```
+
+Perform standardizations / normalizations
+
+```{r}
+# Standardize
+standard_metadata <- vegan::decostand(abiotic_rda_input_filtered, MARGIN = 2, method = "standardize", na.action = na.exclude)
+
+metadata_normed_all <- data.frame(standard_metadata) %>% 
+  rownames_to_column(var = "DAY") %>% 
+  mutate(DAY = as_datetime(DAY)) %>% 
+  right_join(season_cat) %>% 
+  drop_na() %>% 
+  column_to_rownames(var = "DAY")
+```
+
+```{r}
+biotic_rda_standard_count <- vegan::decostand(biotic_rda_input_filtered, MARGIN = 2, method = "normalize")
+
+#chi.square
 # ?vegan::decostand
 # Repeat for carbon
-
 # repeat for carbon in ml.
 ```
 
 Run the RDA
 ```{r}
 rda_counts <- rda(biotic_rda_standard_count ~ ., 
-                  data = metadata_normed_all,
-                  na.exclude)
-?rda()
-rda_counts
+                  data = metadata_normed_all)
+
+# ?rda()
+# rda_counts
 summary(rda_counts)
 ```
 
