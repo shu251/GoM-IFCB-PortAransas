@@ -22,13 +22,16 @@ library(patchwork)
 library(svglite)
 library(scales)
 library(treemapify)
+library(compositions); library(vegan)
 ```
 
 # Preliminary input data
 
 All data from Port Aransas. Counts by hour. Remove data before January 1 2008, as it was newly deployed and has some inconsistencies. Also using lubridate to convert to R-friendly date/time formats.
 
-> Go back and ensure carbon units and time zone!
+
+Time zone is UTC and units of carbon are pg C per cell. 
+
 
 ```{r}
 counts <- read.csv("input-data/counts_hourly_Hu.csv") |> 
@@ -45,7 +48,7 @@ range(counts$DAY)
 # head(counts)
 ```
 
-Carbon biomass by day.
+Carbon biomass by day. pgC per cell.
 
 ```{r}
 carbon <- read.csv("input-data/carbon_hourly.csv") %>% 
@@ -94,7 +97,7 @@ counts_long_wtax <- counts %>%
   filter(COUNT > 0) %>% 
   left_join(tax_curated)
 
-# head(counts_long_wtax)
+head(counts_long_wtax)
 # range(counts_long_wtax$COUNT)
 ```
 
@@ -110,350 +113,25 @@ carbon_long_wtax <- carbon %>%
 # range(carbon_long_wtax$CARBON)
 ```
 
+## Combine carbon and cell counts
+
+```{r}
+combined_gom_long <- carbon_long_wtax %>% 
+  left_join(counts_long_wtax)
+```
 
 
 Types of classifications in dataset.
 ```{r}
-table(counts_long_wtax$COURSE_CLASSIFICATION)
-table(counts_long_wtax$TYPE)
-# glimpse(counts_long_wtax)
-
-# table(carbon_long_wtax$COURSE_CLASSIFICATION)
+table(combined_gom_long$COURSE_CLASSIFICATION)
+table(combined_gom_long$TYPE)
+# glimpse(combined_gom_long)
+# table(combined_gom_long$COURSE_CLASSIFICATION)
 ```
-
-## Save / import data locally
-
-```{r}
-# save(counts_long_wtax, carbon_long_wtax, file = "input-data/compiled_data_input.RData")
-```
-
-Pick up here to work locally.
-
-```{r}
-load("input-data/compiled_data_input.RData", verbose = TRUE)
-```
-
-
-We need the date/time information from the IFCB outputs to be similar to the metadata for statistical work. 
-```{r}
-head(counts_long_wtax)
-```
-
-
-
-# Import Gulf metadata
-
-Metadata information compiled by Siddarth Seshampally.
-
-## TABS Buoy D
-
-Import and compile data for TABS Buoy D from "Ocean Data". Downloaded as individual years.
-
-First isolate downloaded files.
-
-```{r}
-ocean_data_files <- list.files(path = "input-data/TABS_D/", pattern = "Ocean Data ", full.names = TRUE)
-
-# Make sure it works
-ocean_data_files
-# The full.names = TRUE means that it will output the whole path. This is what we want!
-```
-
-Let's test out how to import one of these files so we can write an effective function below.
-
-```{r}
-test <- read.table(
-  "input-data/TABS_D/Ocean Data 2010.txt", #Use read.table, because columns were separated by either 1 or more spaces. 
-  comment.char = "", # Tell R that the "#" in line 1 and 2 needs to be read, instead of ignored.
-  skip = 1, #Skip the first line, because there are 2 "headers"
-  header = TRUE # make sure the first column is read in as a column header.
-  )
-head(test)
-# ?read.table
-
-# We will want to fix the column headers below, so let's try it. 
-# YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
-
-test_headers <- test |> 
-  select(YEAR = X.yr,
-         MONTH = mo,
-         DAY = dy,
-         HOUR = hr,
-         MINUTE = mn,
-         DEPTH_m = m,
-         TEMP_degC = degC,
-         COND_mS_cm = mS.cm,
-         SAL_psu = psu,
-         O2_perc = X.,
-         O2_PPM = ppm,
-         Cl_ug_l = ug.l,
-         TURB_FTU = FTU,
-         pH = X..1,
-         EH = mv)
-## This is where you will want to review the data you collected. And remember R is really basic when it comes to reading in spaces and special characters. So we should make more meaningful column headers.
-head(test_headers)
-```
-
-```         
-#YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
-#yr  mo dy hr mn       m  degC  mS/cm   psu     %   ppm   ug/l   FTU     -    mv
-2010 01 01 00 00     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
-2010 01 01 00 30     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
-```
-
-*Columns should be:* YY MM DD hh mm DEPTH OTMP COND SAL O2% O2PPM CLCON TURB PH EH
-
-We can test out and build each line of the function using more examples with `ocean_data_files[1]`
-
-```{r}
-i <- ocean_data_files[1]
-# i
-# Isolate each file name, so we can get the year information.
-strip_name <- unlist(strsplit(i, " "))
-year <- str_remove(strip_name[3], ".txt")
-year
-```
-
-Write a function to import each file, modify it, and anneal it to itself.
-
-```{r}
-rm(in_data); rm(new_table)
-# The i will be our variable in the function. This "for" statement will reach each item in the "ocean_data_files" file list.
-for (i in ocean_data_files){
-  in_data <- read.table(i, 
-  comment.char = "", skip = 1, header = TRUE)
-  # Get year information.
-  strip_name <- unlist(strsplit(i, " "))
-  year <- str_remove(strip_name[3], ".txt")
-  # Add as a column
-  in_data$YEAR <- year
-  # Write an if else statement to combine all data.
-  if (!exists("new_table")){
-    new_table <- in_data
-  } else {
-    new_table <- rbind(new_table, in_data)
-  }
-  rm(in_data)
-}
-
-# Check out the new table
-head(new_table)
-
-# All years?
-unique(new_table$YEAR)
-```
-
-Fix column headers now. Note that for this data, YEAR was listed twice. We can clean it up now. But it is an example of how to parse file names for dataframe information.
-
-```{r}
-ocean_data_dfs <- new_table |> 
-  select(YEAR = `X.yr`,
-       MONTH = mo,
-       DAY = dy,
-       HOUR = hr,
-       MINUTE = mn,
-       DEPTH_m = m,
-       TEMP_degC = degC,
-       COND_mS_cm = `mS.cm`,
-       SAL_psu = psu,
-       O2_perc = `X.`,
-       O2_PPM = ppm,
-       Cl_ug_l = `ug.l`,
-       TURB_FTU = FTU,
-       pH = `X..1`,
-       EH = mv)
-colnames(ocean_data_dfs)
-```
-
-## Make plots with ocean data
-
-```{r}
-ocean_data_dfs_long <- ocean_data_dfs |> 
-  pivot_longer(cols = -c(YEAR, MONTH, DAY, HOUR, MINUTE), names_to = "VARIABLE", values_to = "VALUE") |> 
-  unite(date, YEAR, MONTH, DAY, sep = "-", remove = FALSE) |>
-  unite(month_day, MONTH, DAY, sep = "-", remove = FALSE) |> 
-  unite(time, HOUR, MINUTE, sep = ":") |> 
-  # Artificially make a column of dates that have the same year (it needs to be a leap year).
-  mutate(GRAPH_DATE = as.Date(paste("2012", month(date),mday(date), sep = "-")))
-
-head(ocean_data_dfs_long)
-```
-
-When data are in long format it is easier to make lots of plots. Use the next two sets of commands to look at the data and variables.
-
-```{r}
-range(ocean_data_dfs$TEMP_degC)
-# hist(ocean_data_dfs$TURB_FTU)
-# range(ocean_data_dfs$TURB_FTU)
-```
-
-```{r}
-unique(ocean_data_dfs_long$VARIABLE)
-head(ocean_data_dfs_long)
-```
-
-### Temperature by year
-
-```{r, fig.height=8, fig.width=15}
-
-ocean_data_dfs_long |> 
-  filter(VARIABLE == "TEMP_degC") |> 
-  filter(VALUE < 99) |> 
-  mutate(YEAR = as.character(YEAR)) |> 
-  group_by(YEAR, date, GRAPH_DATE) |> 
-    summarise(TEMP_MEAN = mean(VALUE),
-              TEMP_MIN = min(VALUE),
-              TEMP_MAX = max(VALUE)) |> 
-  ggplot(aes(x = GRAPH_DATE, y = TEMP_MEAN, group = YEAR, color = YEAR)) +
-  scale_x_date(labels = scales::date_format("%m/%d")) +
-  geom_point(shape = 16, size = 2) +
-  geom_errorbar(aes(x = GRAPH_DATE, ymin = TEMP_MIN, ymax = TEMP_MAX)) +
-  scale_color_brewer(palette = "Set2") +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(angle = 0, face = "bold", color = "black", hjust = 0.5, vjust = 1, size = 24),
-    axis.text.y = element_text(color = "black", face = "bold", size = 24),
-    axis.title = element_text(color = "black", face = "bold", size = 24)) +
-  labs(x = "Date", y = "Temperature °C")
-```
-
-# Import historical data
-
-> With with Siddarth
-
-From TABs curators.
-
-```{r}
-# tabs_d <- read.delim(file = "../../../Downloads/tabs_D_salt.asc", sep = "", header = FALSE, strip.white = TRUE) |> 
-#   select(DATE = V1, TIME_UTC = V2, TEMP = V3, CONDUCT = V4, SALT = V5, -V6, -V7)
-```
-
-
-
-# IFCB data overview
-
-Make a bar plot of the course classification types available from the IFCB.
-
-```{r, fig.height=4, fig.width=6}
-counts_long_wtax |> 
-  group_by(COURSE_CLASSIFICATION, TYPE) |> 
-  summarise(COUNT = n()) |> 
-  ggplot(aes(area = COUNT, fill = COURSE_CLASSIFICATION)) +
-  geom_treemap(color = "white") +
-  facet_grid(rows = vars(TYPE)) +
-  theme_classic()
-```
-
-Repeat with only microeukaryotes
-
-```{r, fig.height=4, fig.width=6}
-counts_long_wtax |> 
-  filter(COURSE_CLASSIFICATION == "Microeukaryote") |> 
-  group_by(Supergroup, Phylum) |> 
-    summarise(SUM = sum(COUNT),
-              COUNT = n()) |> 
-  ggplot(aes(x = Supergroup, y = SUM, fill = Phylum)) +
-  geom_bar(stat = "identity", color = "black") +
-  coord_flip() +
-  theme_classic() +
-  labs(y = "Sum of cell counts", x = "Supergroup")
-```
-
-## Groups by carbon biomass
-
-```{r, fig.height=4, fig.width=6}
-carbon_long_wtax |> 
-  filter(COURSE_CLASSIFICATION == "Microeukaryote") |> 
-  group_by(Supergroup, Phylum) |> 
-    summarise(SUM = sum(CARBON)) |> 
-  ggplot(aes(x = Supergroup, y = SUM, fill = Phylum)) +
-  geom_bar(stat = "identity", color = "black") +
-  coord_flip() +
-  theme_classic() +
-  labs(y = "Sum of carbon biomass", x = "Supergroup")
-```
-
-```{r}
-# counts_long_wtax %>% 
-  # select(COURSE_CLASSIFICATION, TYPE, Domain, Supergroup, Phylum) %>% 
-  # distinct()
-# unique(counts_long_wtax$COURSE_CLASSIFICATION)
-```
-
-
-### Breakdown Alveolata
-
-```{r}
-head(counts_long_wtax)
-```
-
-
-```{r, fig.height=5, fig.width=6}
-counts_long_wtax |> 
-  filter(Supergroup == "Alveolata") |> 
-  group_by(Phylum, Class, Order) |> 
-    summarise(SUM = sum(COUNT),
-              COUNT = n()) |> 
-  ggplot(aes(area = SUM, fill = Class, subgroup = Order, label = Order)) +
-  geom_treemap(color = "white") +
-  geom_treemap_subgroup_border(color = "grey") +
-    geom_treemap_text(place = "centre",size = 12) + 
-  theme_classic() +
-  labs(title = "Most abundant Alveolata")
-```
-
-```{r, fig.height=5, fig.width=6}
-carbon_long_wtax |> 
-  filter(Supergroup == "Alveolata") |> 
-  group_by(Phylum, Class, Order) |> 
-    summarise(SUM_CARBON = sum(CARBON)) |> 
-  ggplot(aes(area = SUM_CARBON, fill = Class, subgroup = Order, label = Order)) +
-  geom_treemap(color = "white") +
-  geom_treemap_subgroup_border(color = "grey") +
-    geom_treemap_text(place = "centre",size = 12) + 
-  theme_classic() +
-  labs("Alveolata by carbon")
-```
-
-
-### Breakdown Stramenopiles
-
-```{r}
-head(counts_long_wtax)
-```
-
-
-```{r, fig.height=5, fig.width=6}
-counts_long_wtax |> 
-  filter(Supergroup == "Stramenopiles") |> 
-  group_by(Phylum, Class, Order) |> 
-    summarise(SUM = sum(COUNT),
-              COUNT = n()) |> 
-  ggplot(aes(area = SUM, fill = Class, subgroup = Order, label = Order)) +
-  geom_treemap(color = "white") +
-  geom_treemap_subgroup_border(color = "grey") +
-    geom_treemap_text(place = "centre",size = 12) + 
-  theme_classic() +
-  labs(title = "Most abundant Stramenopiles")
-```
-
-```{r, fig.height=5, fig.width=6}
-carbon_long_wtax |> 
-  filter(Supergroup == "Stramenopiles") |> 
-  group_by(Phylum, Class, Order) |> 
-    summarise(SUM_CARBON = sum(CARBON)) |> 
-  ggplot(aes(area = SUM_CARBON, fill = Class, subgroup = Order, label = Order)) +
-  geom_treemap(color = "white") +
-  geom_treemap_subgroup_border(color = "grey") +
-    geom_treemap_text(place = "centre",size = 12) + 
-  theme_classic() +
-  labs(title = "Stramenopiles by carbon")
-```
-
 
 ## Add seasons
 
-# Make data frames to assign season
+Make data frames to assign season
 
 Spring = March 1 - May 31 Summer = June 1 - Aug 31 Fall = Sept 1 - Nov 30 Winter = Dec 1 - Feb (March 1 (-1))
 
@@ -541,48 +219,259 @@ ggplot(df_oneyear, aes(x = as_date(DATE))) +
             aes(xmin = START_noy, xmax = as_date("2024-12-31"), ymin = 0, ymax = 10000))
 ```
 
+
 Combine with existing data frame.
 
 ```{r}
-# str(counts_long_wtax)
-# str(df_season)
-counts_long_wtax_wseason <- counts_long_wtax %>% 
+combined_gom_long_season <- combined_gom_long %>% 
   left_join(df_season %>% select(DAY, SEASON, START, END)) %>%
   mutate(day_noyear = paste(MONTH, day(DAY), "2024", sep = "-")) |> 
   mutate(DAY_NOYEAR = mdy(day_noyear)) |> select(-day_noyear)
+# unique(df_season$SEASON)
+# unique(combined_gom_long_season$SEASON)
+```
 
-# head(counts_long_wtax_wseason)
 
-carbon_long_wtax_wseason <- carbon_long_wtax %>% 
-  left_join(df_season %>% select(DAY, SEASON, START, END)) %>%
-  mutate(day_noyear = paste(MONTH, day(DAY), "2024", sep = "-")) |> 
-  mutate(DAY_NOYEAR = mdy(day_noyear)) |> select(-day_noyear)
+# Import Gulf metadata
+
+Metadata information compiled by Siddarth Seshampally.
+
+## PTAT2 data
+
+_Siddarth_
+
+```{r}
+folder_path <- "/Users/skhu/Desktop/Projects/GoM-IFCB-PortAransas/input-data/PTAT2/Standard-Meterological-Data/"
+file_list <- list.files(folder_path, pattern = "*.txt", full.names = TRUE)
+
+# Print the list of files to ensure they are correctly detected
+print(file_list)
+
+```
+
+Function to load and format input data
+```{r}
+load_and_preprocess <- function(file_path) {
+  # Read the file, skipping the first two header lines
+  data <- read_table(file_path, skip = 2, col_names = FALSE)
+  
+  # Assign proper column names
+  colnames(data) <- c("YY", "MM", "DD", "hh", "mm", "WDIR", "WSPD", "GST", 
+                      "WVHT", "DPD", "APD", "MWD", "PRES", "ATMP", "WTMP", 
+                      "DEWP", "VIS", "TIDE")
+  
+  # Combine date and time columns into a datetime column using lubridate
+  data <- data %>%
+    mutate(
+      YY = as.integer(YY),
+      MM = as.integer(MM),
+      DD = as.integer(DD),
+      hh = as.integer(hh),
+      mm = as.integer(mm),
+      datetime = make_datetime(YY, MM, DD, hh, mm)  # Ensure hourly accuracy
+    )
+  
+  return(data)
+}
+
 ```
 
 ```{r}
-# save(carbon_long_wtax_wseason, counts_long_wtax_wseason, df_oneyear, df_season, file = "input-data/data_annotated_wtax_wseason.RData")
-```
+# Load and merge all data files
+all_data <- file_list %>%
+  lapply(load_and_preprocess) %>%
+  bind_rows()
 
-# Plot all years of data
+# Check the combined dataset
+print(dim(all_data))  # Print the dimensions of the data
+print(head(all_data))  # View the first few rows
+
+# range(all_data$datetime)
+```
 
 ```{r}
-load(file = "input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
-```
+# Extract year for aggregation
+head(all_data)
+all_data <- all_data %>%
+  unite(day, YY, MM, DD, sep = "-", remove = FALSE) %>% 
+  mutate(year = format(datetime, "%Y"))
 
+# Group by year and calculate averages
+yearly_data <- all_data %>%
+  group_by(year) %>%
+  summarize(
+    avg_ATMP = mean(as.numeric(ATMP), na.rm = TRUE),
+    avg_WTMP = mean(as.numeric(WTMP), na.rm = TRUE)
+  )
+
+# Convert year to a numeric format for plotting
+yearly_data$year <- as.numeric(yearly_data$year)
+
+# Check the aggregated data
+print(head(yearly_data))
+
+
+# Create a full sequence of years
+full_years <- data.frame(year = 2008:2017)
+
+# Merge the full sequence with the aggregated data
+yearly_data <- full_years %>%
+  left_join(yearly_data, by = "year")
+
+# Check the updated yearly data
+print(yearly_data)
+```
 
 ```{r}
-head(counts_long_wtax_wseason)
+# Plot the yearly averages
+ggplot(yearly_data, aes(x = year)) +
+  geom_line(aes(y = avg_ATMP, color = "ATMP"), na.rm = TRUE) +
+  geom_line(aes(y = avg_WTMP, color = "WTMP"), na.rm = TRUE) +
+  scale_x_continuous(
+    breaks = 2008:2017,  # Show all years explicitly
+    labels = 2008:2017
+  ) +
+  labs(
+    title = "Yearly Average of ATMP and WTMP (2008-2017)",
+    x = "Year",
+    y = "Temperature (°C)",
+    color = "Parameter"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels if needed
 ```
+
+> Siddarth, add in temperature and tidal 
+
+
+## Combine with IFCB data
+```{r}
+head(combined_gom_long_season)
+head(all_data)
+# range(all_data$day)
+# range(combined_gom_long_season$DATE)
+
+# unique(combined_gom_long_season$SEASON)
+
+combined_biol_metadata <- all_data %>% 
+  mutate(DATE = ymd(day),
+         MONTH = month(DATE),
+         HOUR = hh) %>% 
+  select(DATE, MONTH, HOUR, day, WDIR, WSPD, GST, PRES, ATMP, WTMP, TIDE) %>% 
+  right_join(combined_gom_long_season, by = join_by(DATE, MONTH, HOUR))
+
+# colnames(combined_biol_metadata)
+# unique(combined_biol_metadata$SEASON)
+head(combined_biol_metadata)
+```
+
+**Standard Meteorological Data:** 
+
+WDIR - Wind direction (the direction the wind is coming from in degrees clockwise from true N) during the same period used for WSPD. See Wind Averaging Methods
+
+WSPD - Wind speed (m/s) averaged over an eight-minute period for buoys and a two-minute period for land stations. Reported Hourly. See Wind Averaging Methods.
+
+GST - Peak 5 or 8 second gust speed (m/s) measured during the eight-minute or two-minute period. The 5 or 8 second period can be determined by payload, See the Sensor Reporting, Sampling, and Accuracy section.
+
+WVHT - Significant wave height (meters) is calculated as the average of the highest one-third of all of the wave heights during the 20-minute sampling period. See the Wave Measurements section.
+
+DPD - Dominant wave period (seconds) is the period with the maximum wave energy. See the Wave Measurements section.
+
+ADP - Average wave period (seconds) of all waves during the 20-minute period. See the Wave Measurements section.
+
+MWD - The direction from which the waves at the dominant period (DPD) are coming. The units are degrees from true North, increasing clockwise, with North as 0 (zero) degrees and East as 90 degrees. See the Wave Measurements section.
+
+PRES - Sea level pressure (hPa). For C-MAN sites and Great Lakes buoys, the recorded pressure is reduced to sea level using the method described in NWS Technical Procedures Bulletin 291 (11/14/80). ( labeled BAR in Historical files)
+
+ATMP - Air temperature (Celsius). For sensor heights on buoys, see Hull Descriptions. For sensor heights at C-MAN stations, see C-MAN Sensor Locations
+
+WTMP - Sea surface temperature (Celsius). For buoys the depth is referenced to the hull's waterline. For fixed platforms it varies with tide, but is referenced to, or near Mean Lower Low Water (MLLW).
+
+DEWP - Dewpoint temperature taken at the same height as the air temperature measurement.
+
+VIS - Station visibility (nautical miles). Note that buoy stations are limited to reports from 0 to 1.6 nmi.
+
+PTDY - Pressure Tendency is the direction (plus or minus) and the amount of pressure change (hPa)for a three hour period ending at the time of observation. (not in Historical files)
+
+TIDE - The water level in feet above or below Mean Lower Low Water (MLLW).
+
+```{r}
+head(combined_biol_metadata)
+```
+
+## Save / import data locally
+
+```{r}
+save(combined_gom_long_season, combined_biol_metadata, df_season, all_data, file = "input-data/data_annotated_wtax_wseason.RData")
+```
+
+# Checkpoint 1
+```{r}
+load("input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
+# will load: combined_gom_long_season, combined_biol_metadata, df_season, all_data
+```
+
+# IFCB data overview
+
+Make a bar plot of the course classification types available from the IFCB.
+
+```{r, fig.height=4, fig.width=6}
+head(combined_gom_long_season)
+combined_gom_long_season |> 
+  group_by(COURSE_CLASSIFICATION, TYPE) |> 
+  summarise(total_OCCUR = n(),
+            total_counts = sum(COUNT),
+            total_carbon = sum(CARBON)) |> 
+  pivot_longer(cols = starts_with("total_")) %>% 
+  ggplot(aes(area = value, fill = COURSE_CLASSIFICATION)) +
+    geom_treemap(color = "white") +
+    facet_grid(rows = vars(TYPE), cols = vars(name)) +
+    theme_classic()
+```
+
+> Based on the above, we will focus primarily on the pink color, microeukaryotes, which will include cells and cell type. 
+
+Repeat with only microeukaryotes
+
+```{r, fig.height=4, fig.width=6}
+combined_gom_long_season |> 
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") |> 
+  group_by(Supergroup, Phylum) |> 
+    summarise(var_sum_count = sum(COUNT),
+              var_sum_carbon = sum(CARBON)) |> 
+  pivot_longer(cols = starts_with("var_")) %>% 
+  ggplot(aes(x = Supergroup, y = value, fill = Phylum)) +
+  geom_bar(stat = "identity", color = "black") +
+  coord_flip() +
+  theme_classic() +
+  facet_grid(cols = vars(name), scales = "free") +
+  labs(y = "Sum of cell counts", x = "Supergroup")
+```
+
+
+## Cells, Carbon, and carbon per cell
+
+Carbon units are pgC per cell; Cells are cells per ml. 
+
+
+cell * carbon = pgC per ml
+
+```{r}
+head(combined_biol_metadata)
+plot_biotic <- combined_biol_metadata %>% 
+  mutate(pgC_ml = COUNT * CARBON) %>% 
+  select(DATE, CELL_ID, COURSE_CLASSIFICATION, TYPE, Domain, Supergroup, Phylum, Class, Order, Family, Genus, Species, SEASON, CARBON, COUNT, pgC_ml, START, END, DAY_NOYEAR)
+  
+```
+
+### Plot biotic - all years
 
 We want to add information to the dates for when there are Karenia notifications and a data gap. 
 ```{r}
-kar_gap <- counts %>% 
-  select(-DAY, -MONTH, -HOUR) %>% 
-  pivot_longer(cols = -c(DATE), names_to = "CELL_ID", values_to = "COUNT") %>%
+kar_gap <- plot_biotic %>% 
+  filter(CELL_ID == "Karenia_brevis") %>% 
   mutate(ADD = case_when(
-    (grepl("Karenia", CELL_ID) & COUNT > 2) ~ "Notification",
-    is.na(COUNT) ~ "Data gap"
-  )) %>% 
+    (grepl("Karenia_brevis", CELL_ID) & COUNT > 2) ~ "Notification")) %>% 
   mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
          YEAR = year(as_date(DATE))) %>% 
   select(WEEK, YEAR, ADD) %>% 
@@ -591,148 +480,109 @@ kar_gap <- counts %>%
 ```
 
 
-
 ```{r}
-counts_byweek <- counts_long_wtax_wseason %>% 
+values_byweek <- plot_biotic %>% 
   filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
-  filter(Phylum != "Cnidaria") %>% 
-  # Average the counts PER day for a single Cell ID type
-  group_by(DAY, DATE, CELL_ID, SEASON, START, END, DAY_NOYEAR) %>% 
-    summarise(COUNT_MEAN_PERDAY = mean(COUNT)) %>% 
+  filter(Supergroup != "Plantae" & Supergroup != "Animalia/Metazoa") %>% 
+  select(-START, -END, -DAY_NOYEAR) %>% 
+  pivot_longer(cols = -c(DATE, CELL_ID, COURSE_CLASSIFICATION, TYPE, Domain, Supergroup, Phylum, Class, Order, Family, Genus, Species, SEASON), names_to = "VARIABLE", values_to = "VALUE") %>% 
+  distinct() %>% 
+  # Average the variable PER day for a single Cell ID type
+  group_by(VARIABLE, DATE, CELL_ID, SEASON) %>% 
+    summarise(MEAN_bycell_day = mean(VALUE)) %>% 
   ungroup() %>% 
   # Sum total cells for a single day
-  group_by(DAY, DATE, SEASON) %>% 
-    summarise(SUM_COUNT_PERDAY = sum(COUNT_MEAN_PERDAY)) %>% 
+  group_by(DATE, SEASON, VARIABLE) %>% 
+    summarise(SUM_byday = sum(MEAN_bycell_day)) %>% 
   ungroup() %>% 
   # Add a column to specify the WEEK - have week start on Mondays
   mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
          MONTH = month(as_date(DATE)),
          YEAR = year(as_date(DATE))) %>% 
   # Get mean, min, and max for each week
-  group_by(WEEK, SEASON, YEAR) %>% 
-    summarise(MEAN_WEEK = mean(SUM_COUNT_PERDAY),
-              MAX_WEEK = max(SUM_COUNT_PERDAY),
-              MIN_WEEK = min(SUM_COUNT_PERDAY))
+  group_by(WEEK, SEASON, YEAR, VARIABLE) %>% 
+    summarise(MEAN_WEEK = mean(SUM_byday),
+              MAX_WEEK = max(SUM_byday),
+              MIN_WEEK = min(SUM_byday)) 
 
-head(counts_byweek)
-# range(counts_byday$SUM_COUNT_PERDAY)
+head(values_byweek)
 ```
 
-```{r, fig.height=6, fig.width=30}
-oneyr_counts <- counts_byweek %>% 
+```{r, fig.height=7, fig.width=30}
+oneyr_counts <- values_byweek %>% 
+  mutate(VARIABLE_LABEL = factor(VARIABLE, levels = c("COUNT", "CARBON", "pgC_ml"), labels = c(bquote("Cells"~ml^-1), bquote("pg Carbon"~cell^-1), bquote("pg Carbon"~ml^-1)))) %>% 
   ggplot(aes(x = as_date(WEEK), y = MEAN_WEEK)) + 
     geom_line(color = "black", alpha = 0.4) +
     geom_linerange(aes(ymin = MIN_WEEK, ymax = MAX_WEEK, color = SEASON, alpha = 0.5), linewidth = 0.5) +
     geom_point(shape = 19, size = 2, aes(color = SEASON)) +
   theme_classic() +
+  facet_grid(rows = vars(VARIABLE_LABEL), scales = "free", 
+             labeller = label_parsed, switch = "y") +
   scale_x_date(date_labels = "%b %y", expand = c(0,0), date_breaks = "3 months", date_minor_breaks = "month") +
   scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
   scale_y_log10() +
-  labs(x = "", y = bquote("log cell"~ml^-1)) +
+  labs(x = "IFCB time series", y = "") +
   theme(legend.position = "bottom", legend.title = element_blank(),
+        strip.text.y = element_text(color = "black", face = "bold", size = 14),
+        strip.background = element_blank(),
+        strip.placement = "outside",
         axis.text.x = element_text(color = "black", face = "bold", size = 14),
         axis.title = element_text(color = "black", face = "bold", size = 14),
         axis.text.y = element_text(color = "black", face = "bold", size = 14),
         panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3)) +
-  geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 10000), shape = 19, color = "red", alpha = 0.6) +
-  geom_point(data = (kar_gap %>% filter(ADD != "Notification")), aes(x = as_date(WEEK), y = 0), size = 3, alpha = 0.6, shape = 17, color = "#bdbdbd")
+  geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 10000), shape = 19, color = "red", alpha = 0.6)
+# labs(y = bquote("FLP cells " ~ mL^-1), x = "Incubation hours") + 
+oneyr_counts
+  # geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 10000), shape = 19, color = "red", alpha = 0.6) +
+  # geom_point(data = (kar_gap %>% filter(ADD != "Notification")), aes(x = as_date(WEEK), y = 0), size = 3, alpha = 0.6, shape = 17, color = "#bdbdbd")
 ```
-Repeat with carbon data
+> This is a good supplementary figure or summary figure for a poster explaining the IFCB. 
 
+
+### Plot biotic - one year
 ```{r}
-c_byweek <- carbon_long_wtax_wseason %>% 
-  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
-  filter(Phylum != "Cnidaria") %>% 
-  # Average the counts PER day for a single Cell ID type
-  group_by(DAY, DATE, CELL_ID, SEASON, START, END, DAY_NOYEAR) %>% 
-    summarise(C_MEAN_PERDAY = mean(CARBON)) %>% 
-  ungroup() %>% 
-  # Sum total cells for a single day
-  group_by(DAY, DATE, SEASON) %>% 
-    summarise(SUM_C_PERDAY = sum(C_MEAN_PERDAY)) %>% 
-  ungroup() %>% 
-  # Add a column to specify the WEEK - have week start on Mondays
-  mutate(WEEK = cut(DATE, "week", start.on.monday = TRUE),
-         MONTH = month(as_date(DATE)),
-         YEAR = year(as_date(DATE))) %>% 
-  # Get mean, min, and max for each week
-  group_by(WEEK, SEASON, YEAR) %>% 
-    summarise(MEAN_WEEK = mean(SUM_C_PERDAY),
-              MAX_WEEK = max(SUM_C_PERDAY),
-              MIN_WEEK = min(SUM_C_PERDAY))
-
-head(c_byweek)
-```
-
-```{r, fig.height=6, fig.width=30}
-oneyr_c <- c_byweek %>% 
-  ggplot(aes(x = as_date(WEEK), y = MEAN_WEEK)) + 
-    geom_line(color = "black", alpha = 0.4) +
-    geom_linerange(aes(ymin = MIN_WEEK, ymax = MAX_WEEK, color = SEASON, alpha = 0.5), linewidth = 0.5) +
-    geom_point(shape = 19, size = 2, aes(color = SEASON)) +
-  theme_classic() +
-  scale_x_date(date_labels = "%b %y", expand = c(0,0), date_breaks = "3 months", date_minor_breaks = "month") +
-  scale_color_manual(values = c("#cc5500","#bccbae","#ffbf00","#5d4e62")) +
-  scale_y_log10() +
-  labs(x = "", y = bquote("Carbon cell"~ml^-1)) +
-  theme(legend.position = "bottom", legend.title = element_blank(),
-        axis.text.x = element_text(color = "black", face = "bold", size = 14),
-        axis.title = element_text(color = "black", face = "bold", size = 14),
-        axis.text.y = element_text(color = "black", face = "bold", size = 14),
-        panel.grid.major = element_line(color = "#d9d9d9", linewidth = 0.3)) +
-  geom_point(data = (kar_gap %>% filter(ADD == "Notification")), aes(x = as_date(WEEK), y = 1E+7), shape = 19, color = "red", alpha = 0.6) +
-  geom_point(data = (kar_gap %>% filter(ADD != "Notification")), aes(x = as_date(WEEK), y = 0), size = 3, alpha = 0.6, shape = 17, color = "#bdbdbd")
-```
-
-
-```{r, fig.height=10, fig.width=32}
-(oneyr_counts + theme(legend.position = "none")) + 
-  oneyr_c + 
-  patchwork::plot_layout(nrow = 2)
-```
-
-
-
-
-
-# Plot a year of data
-
-```{r}
-load(file = "input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
-```
-
-### Plot 1 year of cell count data
-
-```{r}
-# YMAX <- max(df_classification_all$MEAN_COUNTS)
-
-counts_1yr <- counts_long_wtax_wseason %>%  
-  # Remove any zeroes
-  filter(COUNT > 0) %>% 
-  # Group by Cell ID to get mean for cell ID for a single day.
+head(plot_biotic)
+biotic_1yr <- plot_biotic %>% 
+  # Group by cell ID to get mean for a single day
   group_by(DAY_NOYEAR, DATE, CELL_ID, SEASON, COURSE_CLASSIFICATION) %>% 
-    summarise(PER_DAY_CELL = mean(COUNT)) %>% 
+    summarise(PER_DAY_CELL = mean(COUNT),
+              PER_DAY_CARBON = mean(CARBON),
+              PER_DAY_CARBON_ml = mean(pgC_ml)) %>% 
   ungroup() %>% 
   # NOW sum up the different cell types that contribute to the course classification per day
   group_by(DAY_NOYEAR, DATE, SEASON, COURSE_CLASSIFICATION) %>% 
-    summarise(PER_DAY_COURSECLASS = sum(PER_DAY_CELL)) %>% 
+    summarise(PER_DAY_COURSE_CELL = sum(PER_DAY_CELL),
+              PER_DAY_COURSE_CARBON = sum(PER_DAY_CARBON),
+              PER_DAY_COURSE_CARBONml = sum(PER_DAY_CARBON_ml)) %>% 
   ungroup() %>% 
   # Now average by year
   group_by(DAY_NOYEAR, COURSE_CLASSIFICATION, SEASON) %>%  
-    summarise(MEAN_COUNTS_1yr = mean(PER_DAY_COURSECLASS)) 
-# range(counts_1yr$MEAN_COUNTS_1yr)
-YMAX <- max(counts_1yr$MEAN_COUNTS_1yr)
+    summarise(MEAN_COUNTS_1yr = mean(PER_DAY_COURSE_CELL),
+              MEAN_CARBON_1yr = mean(PER_DAY_COURSE_CARBON),
+              MEAN_CARBONml_1yr = mean(PER_DAY_COURSE_CARBONml)) 
+head(biotic_1yr)
+```
+
+
+```{r, fig.height=8, fig.width=9}
+YMAX <- max(biotic_1yr$MEAN_CARBON_1yr)
+YMAX <-0
 # YMAX
-cell_counts_1yr<- counts_1yr %>% 
-  ggplot(aes(x = DAY_NOYEAR, y = MEAN_COUNTS_1yr, fill = COURSE_CLASSIFICATION)) + 
+biotic_1yr %>% 
+  pivot_longer(cols = starts_with("MEAN_")) %>% 
+  mutate(VARIABLE_LABEL = factor(name, levels = c("MEAN_COUNTS_1yr", "MEAN_CARBON_1yr", "MEAN_CARBONml_1yr"), labels = c(bquote("Cells"~ml^-1), bquote("pg Carbon"~cell^-1), bquote("pg Carbon"~ml^-1)))) %>% 
+  ggplot(aes(x = DAY_NOYEAR, y = value, fill = COURSE_CLASSIFICATION)) + 
   geom_area(position = "stack") +
   theme_classic() +
   scale_x_date(date_labels = "%b", expand = c(0,0)) +
   scale_y_continuous(expand = c(0,0)) +
-  labs(x = "", y = "Cell counts") +
+  facet_grid(rows = vars(VARIABLE_LABEL), scales = "free", labeller = label_parsed) +
+  labs(x = "", y = "") +
+  scale_fill_manual(values = c("#fead5d", "#1468b3","#00ac43","#f6f86d","#fc7e66", "#c304aa")) +
   theme(legend.position = "bottom", legend.title = element_blank(),
         axis.text.x = element_text(color = "black", face = "bold", size = 12),
-        axis.text.y = element_text(color = "black", face = "bold", size = 12)) +
+        axis.text.y = element_text(color = "black", face = "bold", size = 12),
+        strip.background = element_blank()) +
   geom_rect(xmin = as_date("2024-09-01"), xmax = as_date("2024-11-30"), ymin = (YMAX), ymax = (YMAX+40), alpha = 0.2, fill = "#cc5500") +
   geom_rect(xmin = as_date("2024-03-01"), xmax = as_date("2024-5-31"), ymin = (YMAX), ymax = (YMAX+40), alpha = 0.2, fill = "#bccbae") +
   geom_rect(xmin = as_date("2024-06-01"), xmax = as_date("2024-08-31"), ymin = (YMAX), ymax = (YMAX+40), alpha = 0.2, fill = "#ffbf00") +
@@ -744,51 +594,49 @@ cell_counts_1yr<- counts_1yr %>%
 #Winter = Dec 1 - Feb (March 1 (-1))
 ```
 
-### Plot 1 year of carbon biomass data
+
+
+### Plot abiotic - all years
+
+> Siddarth
 
 ```{r}
-c_1yr <- carbon_long_wtax_wseason |> 
-  # Remove any zeroes
-  filter(CARBON > 0) %>% 
-  # Group by Cell ID to get mean for cell ID for a single day.
-  group_by(DAY_NOYEAR, DATE, CELL_ID, SEASON, COURSE_CLASSIFICATION) %>% 
-    summarise(PER_DAY_C = mean(CARBON)) %>% 
-  ungroup() %>% 
-  # NOW sum up the different cell types that contribute to the course classification per day
-  group_by(DAY_NOYEAR, DATE, SEASON, COURSE_CLASSIFICATION) %>% 
-    summarise(PER_DAY_COURSECLASS = sum(PER_DAY_C)) %>% 
-  ungroup() %>% 
-  # Now average by year
-  group_by(DAY_NOYEAR, COURSE_CLASSIFICATION, SEASON) %>%  
-    summarise(MEAN_C_1yr = mean(PER_DAY_COURSECLASS)) 
-
-carbon_1yr <- c_1yr %>% 
-  ggplot(aes(x = DAY_NOYEAR, y = MEAN_C_1yr, fill = COURSE_CLASSIFICATION)) + 
-  geom_area(position = "stack") +
-  theme_classic() +
-  scale_x_date(date_labels = "%b", expand = c(0,0)) +
-  scale_y_continuous(expand = c(0,0)) +
-  labs(x = "", y = "Carbon biomass") +
-  theme(legend.position = "bottom", legend.title = element_blank(),
-        axis.text.x = element_text(color = "black", face = "bold", size = 12),
-        axis.text.y = element_text(color = "black", face = "bold", size = 12))
-# carbon_1yr
+head(combined_biol_metadata)
+plot_abiotic <- combined_biol_metadata %>% 
+  select(DATE, SEASON, WDIR, WSPD, PRES, ATMP, WTMP, TIDE, DAY_NOYEAR)
 ```
 
-```{r, fig.height=7, fig.width=7}
-(cell_counts_1yr + theme(legend.position = "none")) + carbon_1yr + patchwork::plot_layout(nrow = 2)
-```
-# Subset only microeukaryotes
+
+
+### Plot abiotic - one year
+
+> Siddarth 
+
+
+
+# Visualize trends by wind, tide, temperature.
+
+*Siddarth* - specifically look at:
+
+Anglès, Sílvia, Antoni Jordi, Darren W. Henrichs, and Lisa Campbell. 2019. “Influence of Coastal Upwelling and River Discharge on the Phytoplankton Community Composition in the Northwestern Gulf of Mexico.” Progress in Oceanography 173 (April): 26–36. https://doi.org/10.1016/j.pocean.2019.02.001.
+
+
+Henrichs, Darren W., Heidi M. Sosik, Robert J. Olson, and Lisa Campbell. 2011. “Phylogenetic Analysis of Brachidinium Capitatum (Dinophyceae) from the Gulf of Mexico Indicates Membership in the Kareniaceae(1): Phylogeny of b. Capitatum.” Journal of Phycology 47 (2): 366–74. https://doi.org/10.1111/j.1529-8817.2011.00960.x.
+
+Review materials and methods of these papers to look address a few things.
+
+(1) How is tidal cycle included? What parameters can we use to account for tidal cycle/exchange in our dataset?
+
+(2) Is there a way to get salinity?
+
+
 
 
 ## All daily
 
-
 Look at by hour and season for different supergroups. 
 ```{r, fig.height=8, fig.width=10}
-# head(counts_long_wtax_wseason)
-# counts_long_wtax_wseason
-counts_long_wtax_wseason |> 
+combined_biol_metadata |> 
   filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
   filter(Phylum != "Cnidaria") %>% 
   # Remove any zeroes
@@ -819,7 +667,7 @@ Each line represents a phylum, so there are some withe more variability than oth
 ```{r, fig.height=8, fig.width=10}
 alv_stram <- c("Stramenopiles", "Alveolata")
 # counts_long_wtax_wseason
-counts_long_wtax_wseason |> 
+combined_biol_metadata |> 
   filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
   filter(Phylum != "Cnidaria") %>% 
   filter(!(Supergroup %in% alv_stram)) %>% 
@@ -846,63 +694,375 @@ counts_long_wtax_wseason |>
 ```
 
 # Focus on Alveolata, Stramenopiles, & Haptophytes
-```{r}
-head(counts_long_wtax_wseason)
-```
 
-```{r}
-alveolata_counts_1yr <- counts_long_wtax_wseason %>%  
-  filter(Supergroup == "Alveolata") %>% 
-  # Remove any zeroes
-  filter(COUNT > 0) %>% 
-  # Group by Cell ID to get mean for cell ID for a single day.
-  group_by(DAY_NOYEAR, DATE, CELL_ID, SEASON, Phylum, Class, Order, Family, Genus) %>% 
-    summarise(PER_DAY_CELL = mean(COUNT)) %>% 
-  ungroup() %>% 
-  # Use this if grouping across cell IDs
-  # group_by(DAY_NOYEAR, DATE, SEASON, Phylum, Class, Order, Family, Genus, CELL_ID) %>% 
-  #   summarise(PER_DAY_CELLID = sum(PER_DAY_CELL)) %>% 
-  # ungroup() %>% 
-  # Now average by year
-  group_by(DAY_NOYEAR, CELL_ID, SEASON, Phylum, Class, Order, Family, Genus) %>%  
-    summarise(MEAN_COUNTS_1yr = mean(PER_DAY_CELL)) 
-#
-head(alveolata_counts_1yr)
-unique(alveolata_counts_1yr$Phylum) # dinos and ciliates
-unique(alveolata_counts_1yr$Class) # colors?
-unique(alveolata_counts_1yr$Order) 
-max(alveolata_counts_1yr$DAY_NOYEAR)
 
-labels <- alveolata_counts_1yr %>%
-  filter(DAY_NOYEAR == "2024-12-31")
-# head(labels)
-```
-```{r, fig.height=30, fig.width=8}
-alveolata_counts_1yr %>% 
-  # filter(Phylum == "Ciliophora") %>%
-  ggplot(aes(x = DAY_NOYEAR, y = MEAN_COUNTS_1yr, fill = Order)) + 
-  geom_line(color = "black", alpha = 0.4) +
-    geom_point(shape = 21, size = 2, color = "black") +
+```{r, fig.height=5, fig.width=6}
+combined_biol_metadata |> 
+  filter(Supergroup == "Alveolata") |> 
+  group_by(Phylum, Class, Order) |> 
+    summarise(SUM = sum(COUNT),
+              COUNT = n()) |> 
+  ggplot(aes(area = SUM, fill = Class, subgroup = Order, label = Order)) +
+  geom_treemap(color = "white") +
+  geom_treemap_subgroup_border(color = "grey") +
+    geom_treemap_text(place = "centre",size = 12) + 
   theme_classic() +
-  scale_x_date(date_labels = "%b", expand = c(0,0)) +
-  # scale_y_continuous(expand = c(0,0)) +
-  scale_y_log10() +
-  facet_grid(rows = vars(Class), scales = "free") +
-  ggrepel::geom_label_repel(data = labels, aes(label = CELL_ID, x = DAY_NOYEAR, y = MEAN_COUNTS_1yr), nudge_x = 0.1, inherit.aes=F, na.rm = FALSE) +
-  labs(x = "", y = bquote("Cell"~ml^-1)) +
-  theme(legend.position = "bottom", legend.title = element_blank(),
-        axis.text.x = element_text(color = "black", face = "bold", size = 12),
-        axis.text.y = element_text(color = "black", face = "bold", size = 12))
+  labs(title = "Most abundant Alveolata")
+```
+
+```{r, fig.height=5, fig.width=6}
+combined_biol_metadata |> 
+  filter(Supergroup == "Alveolata") |> 
+  group_by(Phylum, Class, Order) |> 
+    summarise(SUM_CARBON = sum(CARBON)) |> 
+  ggplot(aes(area = SUM_CARBON, fill = Class, subgroup = Order, label = Order)) +
+  geom_treemap(color = "white") +
+  geom_treemap_subgroup_border(color = "grey") +
+    geom_treemap_text(place = "centre",size = 12) + 
+  theme_classic() +
+  labs("Alveolata by carbon")
 ```
 
 
-## Ochrophyta
-Diatoms
+### Breakdown Stramenopiles
 
-- Cell counts over the entire dataset.
-- Mean, min, max for each day / week / month?
-- carbon per cell
-- Diversity over time
+```{r, fig.height=5, fig.width=6}
+combined_biol_metadata |> 
+  filter(Supergroup == "Stramenopiles") |> 
+  group_by(Phylum, Class, Order) |> 
+    summarise(SUM = sum(COUNT),
+              COUNT = n()) |> 
+  ggplot(aes(area = SUM, fill = Class, subgroup = Order, label = Order)) +
+  geom_treemap(color = "white") +
+  geom_treemap_subgroup_border(color = "grey") +
+    geom_treemap_text(place = "centre",size = 12) + 
+  theme_classic() +
+  labs(title = "Most abundant Stramenopiles")
+```
 
-Analyses:
-PCA or CCA plot
+```{r, fig.height=5, fig.width=6}
+combined_biol_metadata |> 
+  filter(Supergroup == "Stramenopiles") |> 
+  group_by(Phylum, Class, Order) |> 
+    summarise(SUM_CARBON = sum(CARBON)) |> 
+  ggplot(aes(area = SUM_CARBON, fill = Class, subgroup = Order, label = Order)) +
+  geom_treemap(color = "white") +
+  geom_treemap_subgroup_border(color = "grey") +
+    geom_treemap_text(place = "centre",size = 12) + 
+  theme_classic() +
+  labs(title = "Stramenopiles by carbon")
+```
+
+
+# Table summaries
+
+What is the overall range of pgC per ml for each of these cell types?
+
+```{r}
+head(combined_biol_metadata)
+```
+
+```{r}
+table <- combined_biol_metadata %>%
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
+  filter(Supergroup == "Alveolata" | Supergroup == "Stramenopiles") %>% 
+  mutate(pgC_ml = COUNT * CARBON) %>% 
+  select(Supergroup, Phylum, Class, Order, Family, Genus, CELL_ID, COUNT, CARBON, pgC_ml) %>%
+    pivot_longer(cols = c(COUNT, CARBON, pgC_ml)) %>% 
+  group_by(Supergroup, Phylum, Class, Order, Family, Genus, CELL_ID, name) %>% 
+    summarise(MEAN = mean(value),
+              MAX = max(value),
+              MIN = min(value)) %>% 
+  unite(Taxonomy, Supergroup, Phylum, Class, Order, Family, Genus, sep = ";") %>% 
+  pivot_wider(names_from = name, values_from = c(MEAN, MAX, MIN), names_sep = "_")
+
+# table
+
+# write.csv(table, file = "output-data/table_alveolata_stramenopiles_totalstats.csv")
+```
+
+
+
+```{r}
+head(combined_biol_metadata)
+# unique(combined_biol_metadata$Class)
+combined_biol_metadata %>%
+  filter(COURSE_CLASSIFICATION == "Microeukaryote") %>% 
+  filter(Supergroup == "Alveolata" | Supergroup == "Stramenopiles") %>% 
+  filter(Class == "Bacillariophyceae") %>% 
+  mutate(pgC_ml = COUNT * CARBON) %>% 
+  select(DATE, Supergroup, Phylum, Class, Order, CELL_ID, COUNT, CARBON, pgC_ml) %>%
+    pivot_longer(cols = c(COUNT, CARBON, pgC_ml)) %>% 
+  filter(value > 0) %>% 
+  group_by(DATE, Supergroup, Phylum, Class, Order, CELL_ID, name) %>% 
+    summarise(MEAN = mean(value)) %>% 
+  mutate(VARIABLE_LABEL = factor(name, levels = c("COUNT", "CARBON", "pgC_ml"), labels = c(bquote("Cells"~ml^-1), bquote("pg Carbon"~cell^-1), bquote("pg Carbon"~ml^-1)))) %>% 
+  ggplot(aes(x = Order, y = MEAN)) +
+    geom_violin() +
+  theme_classic() +
+  # scale_x_date(date_labels = "%b", expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  # coord_flip() +
+  facet_grid(rows = vars(VARIABLE_LABEL), scales = "free", labeller = label_parsed) +
+  labs(x = "", y = "") #+
+  # scale_fill_manual(values = c("#fead5d", "#1468b3","#00ac43","#f6f86d","#fc7e66", "#c304aa"))
+```
+
+
+# RDA analysis
+
+RDA reveals relationships among the sites (transcript profiles by site) and the environmental parameters. We can explore the relationship among all transcripts by site, and then model the effect that each environmental parameter has on it.
+
+
+To perform the RDA analysis, we need to isolate biotic vs. abiotic parameters. Normalize them individually and then run the RDA. 
+
+```{r}
+load("input-data/data_annotated_wtax_wseason.RData", verbose = TRUE)
+```
+
+### As many parameters as possible
+
+Isolate the abiotic parameters.
+```{r}
+head(combined_biol_metadata)
+colnames(combined_biol_metadata)
+range(combined_biol_metadata$DAY)
+
+
+
+season_cat <- combined_biol_metadata %>% 
+  select(DAY, SEASON) %>% 
+  distinct()
+
+abiotic_rda_input <- combined_biol_metadata %>% 
+  select(DAY, WDIR, WSPD, ATMP, WTMP, PRES) %>% 
+  distinct() %>% 
+  column_to_rownames(var = "DAY") %>% 
+  mutate_if(is.character, as.numeric) %>% 
+  as.matrix
+
+# Standardize
+standard_metadata <- vegan::decostand(abiotic_rda_input, MARGIN = 2, method = "standardize")
+# head(standard_metadata)
+
+metadata_normed_all <- data.frame(standard_metadata) %>% 
+  rownames_to_column(var = "DAY") %>% 
+  mutate(DAY = as_datetime(DAY)) %>% 
+  left_join(season_cat) %>% 
+  column_to_rownames(var = "DAY")
+
+```
+
+Repeat to prep biological data.
+```{r}
+head(combined_biol_metadata)
+day_rownames <- as.character(unique(rownames(metadata_normed_all)))
+
+biotic_rda_input_count <- combined_biol_metadata %>% 
+  # Potential to filter by specific groups here. 
+  filter(COURSE_CLASSIFICATION == "Microeukaryote" | COURSE_CLASSIFICATION == "Cyanobacteria") %>% 
+  ungroup() %>% 
+  # In a given hour for the DAY... sum up the counts. 
+  group_by(DAY, CELL_ID) %>% 
+    summarise(VALUE = sum(COUNT)) %>%
+  distinct() %>% 
+  pivot_wider(names_from = CELL_ID, values_from = VALUE, values_fn = mean, values_fill = 0) %>% 
+  column_to_rownames(var = "DAY") %>% 
+  mutate_if(is.character, as.numeric) %>%
+  as.matrix
+
+biotic_rda_standard_count <- vegan::decostand(biotic_rda_input_count, MARGIN = 2, method = "standardize")
+
+# ?vegan::decostand
+# Repeat for carbon
+
+# repeat for carbon in ml.
+```
+
+Run the RDA
+```{r}
+rda_counts <- rda(biotic_rda_standard_count ~ ., 
+                  data = metadata_normed_all,
+                  na.exclude)
+?rda()
+rda_counts
+summary(rda_counts)
+```
+
+
+
+
+# Excess
+
+
+
+# TABS
+
+```{r}
+# ocean_data_files <- list.files(path = "input-data/TABS_D/", pattern = "Ocean Data ", full.names = TRUE)
+# 
+# # Make sure it works
+# ocean_data_files
+# # The full.names = TRUE means that it will output the whole path. This is what we want!
+```
+
+Let's test out how to import one of these files so we can write an effective function below.
+
+```{r}
+# test <- read.table(
+#   "input-data/TABS_D/Ocean Data 2010.txt", #Use read.table, because columns were separated by either 1 or more spaces. 
+#   comment.char = "", # Tell R that the "#" in line 1 and 2 needs to be read, instead of ignored.
+#   skip = 1, #Skip the first line, because there are 2 "headers"
+#   header = TRUE # make sure the first column is read in as a column header.
+#   )
+# head(test)
+# # ?read.table
+# 
+# # We will want to fix the column headers below, so let's try it. 
+# # YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+# 
+# test_headers <- test |> 
+#   select(YEAR = X.yr,
+#          MONTH = mo,
+#          DAY = dy,
+#          HOUR = hr,
+#          MINUTE = mn,
+#          DEPTH_m = m,
+#          TEMP_degC = degC,
+#          COND_mS_cm = mS.cm,
+#          SAL_psu = psu,
+#          O2_perc = X.,
+#          O2_PPM = ppm,
+#          Cl_ug_l = ug.l,
+#          TURB_FTU = FTU,
+#          pH = X..1,
+#          EH = mv)
+# ## This is where you will want to review the data you collected. And remember R is really basic when it comes to reading in spaces and special characters. So we should make more meaningful column headers.
+# head(test_headers)
+```
+
+```         
+#YY  MM DD hh mm   DEPTH  OTMP   COND   SAL   O2% O2PPM  CLCON  TURB    PH    EH
+#yr  mo dy hr mn       m  degC  mS/cm   psu     %   ppm   ug/l   FTU     -    mv
+2010 01 01 00 00     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+2010 01 01 00 30     2.0 14.70 999.00 99.00 999.0 99.00 999.00    99 99.00 99.00
+```
+
+*Columns should be:* YY MM DD hh mm DEPTH OTMP COND SAL O2% O2PPM CLCON TURB PH EH
+
+We can test out and build each line of the function using more examples with `ocean_data_files[1]`
+
+```{r}
+# i <- ocean_data_files[1]
+# # i
+# # Isolate each file name, so we can get the year information.
+# strip_name <- unlist(strsplit(i, " "))
+# year <- str_remove(strip_name[3], ".txt")
+# year
+```
+
+Write a function to import each file, modify it, and anneal it to itself.
+
+```{r}
+# rm(in_data); rm(new_table)
+# # The i will be our variable in the function. This "for" statement will reach each item in the "ocean_data_files" file list.
+# for (i in ocean_data_files){
+#   in_data <- read.table(i, 
+#   comment.char = "", skip = 1, header = TRUE)
+#   # Get year information.
+#   strip_name <- unlist(strsplit(i, " "))
+#   year <- str_remove(strip_name[3], ".txt")
+#   # Add as a column
+#   in_data$YEAR <- year
+#   # Write an if else statement to combine all data.
+#   if (!exists("new_table")){
+#     new_table <- in_data
+#   } else {
+#     new_table <- rbind(new_table, in_data)
+#   }
+#   rm(in_data)
+# }
+# 
+# # Check out the new table
+# head(new_table)
+# 
+# # All years?
+# unique(new_table$YEAR)
+```
+
+Fix column headers now. Note that for this data, YEAR was listed twice. We can clean it up now. But it is an example of how to parse file names for dataframe information.
+
+```{r}
+# ocean_data_dfs <- new_table |> 
+#   select(YEAR = `X.yr`,
+#        MONTH = mo,
+#        DAY = dy,
+#        HOUR = hr,
+#        MINUTE = mn,
+#        DEPTH_m = m,
+#        TEMP_degC = degC,
+#        COND_mS_cm = `mS.cm`,
+#        SAL_psu = psu,
+#        O2_perc = `X.`,
+#        O2_PPM = ppm,
+#        Cl_ug_l = `ug.l`,
+#        TURB_FTU = FTU,
+#        pH = `X..1`,
+#        EH = mv)
+# colnames(ocean_data_dfs)
+```
+
+
+```{r}
+# ocean_data_dfs_long <- ocean_data_dfs |> 
+#   pivot_longer(cols = -c(YEAR, MONTH, DAY, HOUR, MINUTE), names_to = "VARIABLE", values_to = "VALUE") |> 
+#   unite(date, YEAR, MONTH, DAY, sep = "-", remove = FALSE) |>
+#   unite(month_day, MONTH, DAY, sep = "-", remove = FALSE) |> 
+#   unite(time, HOUR, MINUTE, sep = ":") |> 
+#   # Artificially make a column of dates that have the same year (it needs to be a leap year).
+#   mutate(GRAPH_DATE = as.Date(paste("2012", month(date),mday(date), sep = "-")))
+# 
+# head(ocean_data_dfs_long)
+```
+
+When data are in long format it is easier to make lots of plots. Use the next two sets of commands to look at the data and variables.
+
+```{r}
+# range(ocean_data_dfs$TEMP_degC)
+# hist(ocean_data_dfs$TURB_FTU)
+# range(ocean_data_dfs$TURB_FTU)
+```
+
+```{r}
+# unique(ocean_data_dfs_long$VARIABLE)
+# head(ocean_data_dfs_long)
+```
+
+## Temperature by year
+
+```{r, fig.height=8, fig.width=15}
+
+# ocean_data_dfs_long |> 
+#   filter(VARIABLE == "TEMP_degC") |> 
+#   filter(VALUE < 99) |> 
+#   mutate(YEAR = as.character(YEAR)) |> 
+#   group_by(YEAR, date, GRAPH_DATE) |> 
+#     summarise(TEMP_MEAN = mean(VALUE),
+#               TEMP_MIN = min(VALUE),
+#               TEMP_MAX = max(VALUE)) |> 
+#   ggplot(aes(x = GRAPH_DATE, y = TEMP_MEAN, group = YEAR, color = YEAR)) +
+#   scale_x_date(labels = scales::date_format("%m/%d")) +
+#   geom_point(shape = 16, size = 2) +
+#   geom_errorbar(aes(x = GRAPH_DATE, ymin = TEMP_MIN, ymax = TEMP_MAX)) +
+#   scale_color_brewer(palette = "Set2") +
+#   theme_classic() +
+#   theme(
+#     axis.text.x = element_text(angle = 0, face = "bold", color = "black", hjust = 0.5, vjust = 1, size = 24),
+#     axis.text.y = element_text(color = "black", face = "bold", size = 24),
+#     axis.title = element_text(color = "black", face = "bold", size = 24)) +
+#   labs(x = "Date", y = "Temperature °C")
+```
+
+
+## Visualize environmental data
+
